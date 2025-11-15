@@ -10,7 +10,7 @@ sudo apt update -y
 sudo apt install -y clang libelf1 libelf-dev zlib1g-dev libssl-dev
 
 # Install optional packages (uncomment if needed)
-# sudo apt install -y binutils-dev libcap-dev llvm gcc make build-essential
+sudo apt install -y binutils-dev libcap-dev llvm gcc make build-essential
 
 cd /local/repository/
 
