@@ -6,3 +6,6 @@ package.json
 package.yaml
 ecli
 bootstrap
+
+# Snyk Security Extension - AI Rules (auto-generated)
+.github/instructions/snyk_rules.instructions.md

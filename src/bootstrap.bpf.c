@@ -153,12 +153,33 @@ int handle_exit(struct trace_event_raw_sched_process_template* ctx)
 
 SEC("tp/exceptions/page_fault_user")
 int handle_fault(struct trace_event_raw_exceptions_page_fault_user* ctx) {
+	struct event *e;
+	u64 id;
+	pid_t pid;
 	u64 addr = ctx->address;
 	u64 ip = ctx->ip;
-	u64 err = ctx->error_code;
+	
+	/* get PID and TID of exiting thread/process */
+	id = bpf_get_current_pid_tgid();
+	pid = id >> 32;
 
-	bpf_printk("PAGEFAULT user: addr=0x%llx ip=0x%llx err=%d\n",
-               addr, ip, err);
+	/* reserve sample from BPF ringbuf */
+	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+	if (!e)
+		return 0;
 
+	/* fill out the sample with data */
+	e->type = 2;                  /* 2 == page-fault event */
+	e->pid = pid;
+	e->ppid = 0;                  /* not populated here */
+	e->exit_event = false;
+	e->duration_ns = 0;
+	bpf_get_current_comm(&e->comm, sizeof(e->comm));
+
+	e->address = addr;
+	e->ip = ip;
+
+	/* submit to userspace */
+	bpf_ringbuf_submit(e, 0);
 	return 0;
 }
