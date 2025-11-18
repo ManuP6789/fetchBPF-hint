@@ -19,7 +19,7 @@ request = pc.makeRequestRSpec()
  
 # Add a raw PC to the request.
 node = request.RawPC("node")
-node.hardware_type = "m510"
+node.hardware_type = "d710"
 
 # Install and execute a script that is contained in the repository.
 node.addService(pg.Execute(shell="sh", command="/local/repository/silly.sh"))
