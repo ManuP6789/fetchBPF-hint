@@ -15,8 +15,9 @@
 
 long PAGE_SIZE;
 #define PAGEMAP_ENTRY 8
-#define GET_BIT(X,Y) (X & ((uint64_t)1<<Y)) >> Y
-#define GET_PFN(X) X & 0x7FFFFFFFFFFFFF
+#define PAGE_PRESENT(v)   ((v >> 63) & 1)
+#define PAGE_SWAPPED(v)   ((v >> 62) & 1)
+#define PFN(v)            (v & ((1ULL << 55) - 1))
 const int __endian_bit = 1;
 #define is_bigendian() ( (*(char*)&__endian_bit) == 0 )
 
@@ -84,55 +85,53 @@ static void sig_handler(int sig)
 	exiting = true;
 }
 
-u64 get_physical_address(pid_t pid, unsigned long vaddr) {
+unsigned long get_physical_address(unsigned long pid, unsigned long vaddr) {
+	printf("I am inside get physical...");
 	char path[64];
-	sprintf(path, "/proc/%d/pagemap", pid);
+	sprintf(path, "/proc/%ld/pagemap", pid);
 	int fd = open(path, O_RDONLY);
-	if(!f){
-      printf("Error! Cannot open %s\n", path_buf);
+	if(!fd){
+      printf("Error! Cannot open pagemap %s\n", path);
       return -1;
    	}
-	off_t off = (vaddr / PAGE_SIZE) * 8;
+	PAGE_SIZE = getpagesize();
 
-    printf("Vaddr: 0x%lx, Page_size: %d, Entry_size: %d\n", virt_addr, PAGE_SIZE, PAGEMAP_ENTRY);
-	printf("Reading %s at 0x%llx\n", path_buf, (unsigned long long) file_offset);
-	status = fseek(fd, off, SEEK_SET);
+	off_t off = (vaddr / PAGE_SIZE) * PAGEMAP_ENTRY;
 
-	if(status){
+    printf("Vaddr: 0x%lx, Page_size: %ld, Entry_size: %d\n", vaddr, PAGE_SIZE, PAGEMAP_ENTRY);
+	printf("Reading %s at 0x%llx\n", path, (unsigned long long) off);
+
+	if(lseek(fd, off, SEEK_SET) == -1){
       perror("Failed to do fseek!");
+	  close(fd);
       return -1;
     }
-	errno = 0;
-    read_val = 0;
-    unsigned char c_buf[PAGEMAP_ENTRY];
-    for(int i=0; i < PAGEMAP_ENTRY; i++){
-      	c = getc(f);
-      	if(c==EOF){
-         printf("\nReached end of the file\n");
-         return 0;
-    	} 
-    	if(is_bigendian())
-           c_buf[i] = c;
-    	else
-           c_buf[PAGEMAP_ENTRY - i - 1] = c;
-        printf("[%d]0x%x ", i, c);
-    }
-    for(int i=0; i < PAGEMAP_ENTRY; i++){
-      //printf("%d ",c_buf[i]);
-      read_val = (read_val << 8) + c_buf[i];
-    }
-	printf("\n");
-	printf("Result: 0x%llx\n", (unsigned long long) read_val);
-	//if(GET_BIT(read_val, 63))
-	if(GET_BIT(read_val, 63))
-		printf("PFN: 0x%llx\n",(unsigned long long) GET_PFN(read_val));
-	else
-		printf("Page not present\n");
-	if(GET_BIT(read_val, 62))
-		printf("Page swapped\n");
-	fclose(f);
-	return 0;
+	
+	uint64_t entry = 0;
+	ssize_t n = read(fd, &entry, PAGEMAP_ENTRY);
+    close(fd);
 
+	if (n != PAGEMAP_ENTRY) {
+        fprintf(stderr, "Short read from pagemap\n");
+        return 0;
+    }
+
+	printf("Pagemap entry = 0x%016llx\n", (unsigned long long)entry);
+
+	if (!PAGE_PRESENT(entry)) {
+        printf("Page not present\n");
+        return 0;
+    }
+    
+	uint64_t pfn = PFN(entry);
+    printf("PFN = 0x%llx\n", (unsigned long long)pfn);
+
+	printf("PFN = 0x%llx\n", (unsigned long long)pfn);
+
+    uint64_t phys = (pfn * getpagesize()) + (vaddr % getpagesize());
+    printf("Physical address = 0x%llx\n", (unsigned long long)phys);
+
+    return phys;
 }
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
@@ -148,6 +147,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
 	/* Page-fault event (type == 2) */
 	if (e->type == 2) {
+		unsigned long phyadd = get_physical_address(e->pid, e->address);
+		printf("%lx\n" ,phyadd);
 		printf("%-8s %-5s %-16s %-7d %lx address=0x%lx ip=0x%lx\n",
 		       ts, "FAULT", e->comm, e->pid, e->cgroup_id, e->address, e->ip);
 		return 0;
