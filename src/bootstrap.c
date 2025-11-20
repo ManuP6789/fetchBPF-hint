@@ -3,11 +3,22 @@
 #include <argp.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdint.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/types.h>
 #include <time.h>
 #include <sys/resource.h>
 #include <bpf/libbpf.h>
 #include "bootstrap.h"
 #include "bootstrap.skel.h"
+
+long PAGE_SIZE;
+#define PAGEMAP_ENTRY 8
+#define GET_BIT(X,Y) (X & ((uint64_t)1<<Y)) >> Y
+#define GET_PFN(X) X & 0x7FFFFFFFFFFFFF
+const int __endian_bit = 1;
+#define is_bigendian() ( (*(char*)&__endian_bit) == 0 )
 
 static struct env {
 	bool verbose;
@@ -73,6 +84,57 @@ static void sig_handler(int sig)
 	exiting = true;
 }
 
+u64 get_physical_address(pid_t pid, unsigned long vaddr) {
+	char path[64];
+	sprintf(path, "/proc/%d/pagemap", pid);
+	int fd = open(path, O_RDONLY);
+	if(!f){
+      printf("Error! Cannot open %s\n", path_buf);
+      return -1;
+   	}
+	off_t off = (vaddr / PAGE_SIZE) * 8;
+
+    printf("Vaddr: 0x%lx, Page_size: %d, Entry_size: %d\n", virt_addr, PAGE_SIZE, PAGEMAP_ENTRY);
+	printf("Reading %s at 0x%llx\n", path_buf, (unsigned long long) file_offset);
+	status = fseek(fd, off, SEEK_SET);
+
+	if(status){
+      perror("Failed to do fseek!");
+      return -1;
+    }
+	errno = 0;
+    read_val = 0;
+    unsigned char c_buf[PAGEMAP_ENTRY];
+    for(int i=0; i < PAGEMAP_ENTRY; i++){
+      	c = getc(f);
+      	if(c==EOF){
+         printf("\nReached end of the file\n");
+         return 0;
+    	} 
+    	if(is_bigendian())
+           c_buf[i] = c;
+    	else
+           c_buf[PAGEMAP_ENTRY - i - 1] = c;
+        printf("[%d]0x%x ", i, c);
+    }
+    for(int i=0; i < PAGEMAP_ENTRY; i++){
+      //printf("%d ",c_buf[i]);
+      read_val = (read_val << 8) + c_buf[i];
+    }
+	printf("\n");
+	printf("Result: 0x%llx\n", (unsigned long long) read_val);
+	//if(GET_BIT(read_val, 63))
+	if(GET_BIT(read_val, 63))
+		printf("PFN: 0x%llx\n",(unsigned long long) GET_PFN(read_val));
+	else
+		printf("Page not present\n");
+	if(GET_BIT(read_val, 62))
+		printf("Page swapped\n");
+	fclose(f);
+	return 0;
+
+}
+
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	const struct event *e = data;
@@ -86,8 +148,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
 	/* Page-fault event (type == 2) */
 	if (e->type == 2) {
-		printf("%-8s %-5s %-16s %-7d address=0x%lx ip=0x%lx\n",
-		       ts, "FAULT", e->comm, e->pid, e->address, e->ip);
+		printf("%-8s %-5s %-16s %-7d %lx address=0x%lx ip=0x%lx\n",
+		       ts, "FAULT", e->comm, e->pid, e->cgroup_id, e->address, e->ip);
 		return 0;
 	}
 

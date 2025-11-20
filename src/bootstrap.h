@@ -26,6 +26,7 @@ struct event {
 	/* page-fault fields (valid when type == 2) */
 	unsigned long address;
 	unsigned long ip;
+	unsigned long cgroup_id;
 };
 
 #endif /* __BOOTSTRAP_H */

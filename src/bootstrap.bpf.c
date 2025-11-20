@@ -175,6 +175,8 @@ int handle_fault(struct trace_event_raw_exceptions_page_fault_user* ctx) {
 	e->exit_event = false;
 	e->duration_ns = 0;
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
+	e->cgroup_id = bpf_get_current_cgroup_id();
+
 
 	e->address = addr;
 	e->ip = ip;
