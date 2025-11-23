@@ -12,8 +12,11 @@
 #include <bpf/libbpf.h>
 #include "bootstrap.h"
 #include "bootstrap.skel.h"
+#include "liburing.h"
+
 
 long PAGE_SIZE;
+#define QD	64
 #define PAGEMAP_ENTRY 8
 #define PAGE_PRESENT(v)   ((v >> 63) & 1)
 #define PAGE_SWAPPED(v)   ((v >> 62) & 1)
@@ -83,6 +86,19 @@ static volatile bool exiting = false;
 static void sig_handler(int sig)
 {
 	exiting = true;
+}
+
+static int setup_context(unsigned entries, struct io_uring *ring)
+{
+	int ret;
+
+	ret = io_uring_queue_init(entries, ring, 0);
+	if (ret < 0) {
+		fprintf(stderr, "queue_init: %s\n", strerror(-ret));
+		return -1;
+	}
+
+	return 0;
 }
 
 unsigned long get_physical_address(unsigned long pid, unsigned long vaddr) {
@@ -172,6 +188,7 @@ int main(int argc, char **argv)
 {
 	struct ring_buffer *rb = NULL;
 	struct bootstrap_bpf *skel;
+	struct io_uring ring;
 	int err;
 
 	/* Parse command line arguments */
@@ -217,6 +234,9 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Failed to create ring buffer\n");
 		goto cleanup;
 	}
+	/* Set up io_uring*/
+	if (setup_context(QD, &ring))
+		return 1;
 
 	/* Process events */
 	printf("%-8s %-5s %-16s %-7s %-7s %s\n",
@@ -236,6 +256,7 @@ int main(int argc, char **argv)
 
 cleanup:
 	/* Clean up */
+	io_uring_queue_exit(&ring);
 	ring_buffer__free(rb);
 	bootstrap_bpf__destroy(skel);
 
