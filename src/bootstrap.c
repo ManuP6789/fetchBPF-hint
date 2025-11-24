@@ -1,6 +1,20 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 /* Copyright (c) 2020 Facebook */
 #include "bootstrap.h"
+#include <argp.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <time.h>
+#include <sys/resource.h>
+#include "liburing.h"
+#include <assert.h>
+#include "prefetch_set.h"
+#include <bpf/libbpf.h>
+#include "bootstrap.skel.h"
 
 long PAGE_SIZE;
 #define QD	64
@@ -11,6 +25,8 @@ long PAGE_SIZE;
 const int __endian_bit = 1;
 #define is_bigendian() ( (*(char*)&__endian_bit) == 0 )
 static int infd, outfd;
+static khash_t(page_set) *prefetching = NULL;
+
 static struct env {
 	bool verbose;
 	long min_duration_ms;
@@ -199,7 +215,22 @@ unsigned long get_physical_address(unsigned long pid, unsigned long vaddr) {
     return phys;
 }
 
-static khash_t(page_set) *prefetching = NULL;
+// Check if the page is already in the prefetch set
+static int check_page_in_flight(uint64_t page) {
+	khiter_t k = kh_get(page_set, prefetching, page);
+
+	if (k != kh_end(prefetching)) {
+		printf("Page 0x%lx already being prefetched, skipping\n", page);
+		return 0;
+	}
+}
+
+void on_prefetch_complete(uint64_t page)
+{
+    khiter_t k = kh_get(page_set, prefetching, page);
+    if (k != kh_end(prefetching))
+        kh_del(page_set, prefetching, k);
+}
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
@@ -224,21 +255,22 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 		uint64_t page = vaddr >> 12;
 		
 		// Check if the page is already in the prefetch set
-        khiter_t k = kh_get(page_set, prefetching, page);
+        if (check_page_in_flight(page) == 1) {
+			return 1;
+		} 
 
-		if (k != kh_end(prefetching)) {
-            printf("Page 0x%lx already being prefetched, skipping\n", page);
-            return 0;
-        }
+		k = kh_put(page_set, prefetching, page, &ret);
 
-		int ret;
-        k = kh_put(page_set, prefetching, page, &ret);
+		if (ret > 0) {
+			printf("Tracking new prefetched page: 0x%lx\n", page);
+		}
 
-        if (ret > 0) {
-            printf("Tracking new prefetched page: 0x%lx\n", page);
-        }
-		// Check that page hasn't already been prefetched or is currently prefetching
+		uint64_t targets[16];   // max prefetch count
+		size_t n = policy->compute_prefetch(policy_ctx, vaddr, targets, 16);
+
 		// Call prefetcher to get page addresses to prefetch with io_uring
+		
+
 		// submit prefetch
 		// Read prefetches and remove from set  
 		return 0;

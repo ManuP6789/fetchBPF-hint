@@ -7,33 +7,57 @@
  * Sequential Prefetch Policy
  * =============================== */
 
+long PAGE_SIZE;
+int MAX_WINDOW = 8;
 typedef struct {
     uint64_t last_fault;
+    uint64_t next_expected_page;
+    size_t window; 
 } seq_ctx_t;
 
-static policy_ctx_t *seq_init(void)
-{
+static policy_ctx_t *seq_init(void) {
     seq_ctx_t *ctx = calloc(1, sizeof(seq_ctx_t));
+    ctx->last_fault = UINT64_MAX;
+    ctx->next_expected_page = UINT64_MAX;
+    ctx->window = 1;
     return (policy_ctx_t *)ctx;
 }
 
-static void seq_on_fault(policy_ctx_t *pctx,
-                         pid_t pid, uint64_t vaddr, uint64_t file_offset)
+static void seq_on_fault(policy_ctx_t *pctx, pid_t pid, uint64_t vaddr, 
+                                                        uint64_t file_offset)
 {
-    /* no-op */
+    seq_ctx_t *ctx = (seq_ctx_t *)pctx;
+    uint64_t page = vaddr & ~(PAGE_SIZE - 1);
+
+    if (ctx->last_fault == UINT64_MAX) {
+        ctx->window = 1;
+    } else if (page == ctx->next_expected_page) {
+        // sequential
+        ctx->window = MIN(ctx->window * 2, MAX_WINDOW);
+    } else {
+        // jump or random
+        ctx->window = 1;
+    }
+
+    ctx->last_fault = page;
+    ctx->next_expected_page = page + ((ctx->window + 1) * PAGE_SIZE);
 }
 
-static size_t seq_compute_prefetch(policy_ctx_t *pctx,
-                                   uint64_t fault, uint64_t *out,
-                                   size_t max)
+static size_t seq_compute_prefetch(policy_ctx_t *pctx, uint64_t fault, 
+                                        uint64_t *out, size_t max) 
 {
+    seq_ctx_t *ctx = (seq_ctx_t*)pctx; 
     if (max == 0) return 0;
-    out[0] = fault + 4096;
-    return 1;
+
+    uint64_t page = fault & ~(PAGE_SIZE - 1);
+
+    for (int i = 1; i <= ctx->window && i <= max; i++)
+        out[i-1] = page + (i * PAGE_SIZE);
+
+    return ctx->window;
 }
 
-static void seq_destroy(policy_ctx_t *pctx)
-{
+static void seq_destroy(policy_ctx_t *pctx) {
     free(pctx);
 }
 
@@ -44,8 +68,7 @@ static const policy_t SEQUENTIAL_POLICY = {
     .destroy = seq_destroy
 };
 
-const policy_t *policy_sequential(void)
-{
+const policy_t *policy_sequential(void) {
     return &SEQUENTIAL_POLICY;
 }
 

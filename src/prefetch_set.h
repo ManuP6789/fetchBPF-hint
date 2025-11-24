@@ -5,6 +5,8 @@
 #include "khash.h"
 
 KHASH_SET_INIT_INT(prefetch)
+KHASH_SET_INIT_INT64(page_set)
+
 
 typedef khash_t(prefetch) prefetch_set_t;
 
