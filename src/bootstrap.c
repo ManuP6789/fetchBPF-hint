@@ -1,19 +1,6 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 /* Copyright (c) 2020 Facebook */
-#include <argp.h>
-#include <signal.h>
-#include <stdio.h>
-#include <stdint.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/types.h>
-#include <time.h>
-#include <sys/resource.h>
-#include <bpf/libbpf.h>
 #include "bootstrap.h"
-#include "bootstrap.skel.h"
-#include "liburing.h"
-
 
 long PAGE_SIZE;
 #define QD	64
@@ -23,11 +10,18 @@ long PAGE_SIZE;
 #define PFN(v)            (v & ((1ULL << 55) - 1))
 const int __endian_bit = 1;
 #define is_bigendian() ( (*(char*)&__endian_bit) == 0 )
-
+static int infd, outfd;
 static struct env {
 	bool verbose;
 	long min_duration_ms;
 } env;
+
+struct io_data {
+	int read;
+	off_t first_offset, offset;
+	size_t first_len;
+	struct iovec iov;
+};
 
 const char *argp_program_version = "bootstrap 0.0";
 const char *argp_program_bug_address = "<bpf@vger.kernel.org>";
@@ -88,6 +82,9 @@ static void sig_handler(int sig)
 	exiting = true;
 }
 
+/* ===============================
+ * io_uring helpers
+ * =============================== */
 static int setup_context(unsigned entries, struct io_uring *ring)
 {
 	int ret;
@@ -99,6 +96,58 @@ static int setup_context(unsigned entries, struct io_uring *ring)
 	}
 
 	return 0;
+}
+
+static void queue_prepped(struct io_uring *ring, struct io_data *data)
+{
+	struct io_uring_sqe *sqe;
+
+	sqe = io_uring_get_sqe(ring);
+	assert(sqe);
+
+	if (data->read)
+		io_uring_prep_readv(sqe, infd, &data->iov, 1, data->offset);
+	else
+		io_uring_prep_writev(sqe, outfd, &data->iov, 1, data->offset);
+
+	io_uring_sqe_set_data(sqe, data);
+}
+
+static int queue_read(struct io_uring *ring, off_t size, off_t offset){
+	struct io_uring_sqe *sqe;
+	struct io_data *data;
+
+	data = malloc(size + sizeof(*data));
+	if (!data)
+		return 1;
+
+	sqe = io_uring_get_sqe(ring);
+	if (!sqe) {
+		free(data);
+		return 1;
+	}
+
+	data->read = 1;
+	data->offset = data->first_offset = offset;
+
+	data->iov.iov_base = data + 1;
+	data->iov.iov_len = size;
+	data->first_len = size;
+
+	io_uring_prep_readv(sqe, infd, &data->iov, 1, offset);
+	io_uring_sqe_set_data(sqe, data);
+	return 0;
+}
+
+static void queue_write(struct io_uring *ring, struct io_data *data) {
+	data->read = 0;
+	data->offset = data->first_offset;
+
+	data->iov.iov_base = data + 1;
+	data->iov.iov_len = data->first_len;
+
+	queue_prepped(ring, data);
+	io_uring_submit(ring);
 }
 
 unsigned long get_physical_address(unsigned long pid, unsigned long vaddr) {
@@ -150,6 +199,8 @@ unsigned long get_physical_address(unsigned long pid, unsigned long vaddr) {
     return phys;
 }
 
+static khash_t(page_set) *prefetching = NULL;
+
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	const struct event *e = data;
@@ -167,6 +218,29 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 		printf("%lx\n" ,phyadd);
 		printf("%-8s %-5s %-16s %-7d %lx address=0x%lx ip=0x%lx\n",
 		       ts, "FAULT", e->comm, e->pid, e->cgroup_id, e->address, e->ip);
+
+		
+		uint64_t vaddr = e->address;
+		uint64_t page = vaddr >> 12;
+		
+		// Check if the page is already in the prefetch set
+        khiter_t k = kh_get(page_set, prefetching, page);
+
+		if (k != kh_end(prefetching)) {
+            printf("Page 0x%lx already being prefetched, skipping\n", page);
+            return 0;
+        }
+
+		int ret;
+        k = kh_put(page_set, prefetching, page, &ret);
+
+        if (ret > 0) {
+            printf("Tracking new prefetched page: 0x%lx\n", page);
+        }
+		// Check that page hasn't already been prefetched or is currently prefetching
+		// Call prefetcher to get page addresses to prefetch with io_uring
+		// submit prefetch
+		// Read prefetches and remove from set  
 		return 0;
 	}
 
@@ -189,6 +263,7 @@ int main(int argc, char **argv)
 	struct ring_buffer *rb = NULL;
 	struct bootstrap_bpf *skel;
 	struct io_uring ring;
+	khash_t(page_set) *prefetching = kh_init(page_set);
 	int err;
 
 	/* Parse command line arguments */

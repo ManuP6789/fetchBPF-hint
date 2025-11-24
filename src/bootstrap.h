@@ -6,6 +6,21 @@
 #define TASK_COMM_LEN 16
 #define MAX_FILENAME_LEN 127
 
+#include <argp.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <time.h>
+#include <sys/resource.h>
+#include <bpf/libbpf.h>
+#include "bootstrap.skel.h"
+#include "liburing.h"
+#include <assert.h>
+#include "prefetch_set.h"
+
 /* event.type:
  *  0 - exec/exit event (original)
  *  1 - exec event (kept for readability; we use exit_event flag for exit)
