@@ -7,8 +7,9 @@
  * Sequential Prefetch Policy
  * =============================== */
 
-long PAGE_SIZE;
 int MAX_WINDOW = 8;
+#define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
+
 typedef struct {
     uint64_t last_fault;
     uint64_t next_expected_page;

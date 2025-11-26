@@ -129,8 +129,9 @@ $(patsubst %,$(OUTPUT)/%.o,$(BZS_APPS)): $(LIBBLAZESYM_HEADER)
 
 $(BZS_APPS): $(LIBBLAZESYM_OBJ)
 
+BOOTSTRAP_EXTRA_OBJS := $(OUTPUT)/prefetch_set.o $(OUTPUT)/policy.o
 # Build application binary
-$(APPS): %: $(OUTPUT)/%.o $(LIBBPF_OBJ) | $(OUTPUT)
+$(APPS): %: $(OUTPUT)/%.o $(BOOTSTRAP_EXTRA_OBJS) $(LIBBPF_OBJ) | $(OUTPUT)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(CFLAGS) $^ $(ALL_LDFLAGS) -lelf -lz -o $@
 

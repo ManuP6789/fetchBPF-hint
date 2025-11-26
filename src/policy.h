@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "bootstrap.h"
+#include <sys/types.h>
 
 typedef struct policy_ctx policy_ctx_t;
 

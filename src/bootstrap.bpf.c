@@ -26,40 +26,7 @@ struct trace_event_raw_exceptions_page_fault_user {
 	unsigned long ip;
 	unsigned long error_code;
 };
-// name: page_fault_user
-// ID: 119
-// format:
-//         field:unsigned short common_type;       offset:0;       size:2; signed:0;
-//         field:unsigned char common_flags;       offset:2;       size:1; signed:0;
-//         field:unsigned char common_preempt_count;       offset:3;       size:1; signed:0;
-//         field:int common_pid;   offset:4;       size:4; signed:1;
 
-//         field:unsigned long address;    offset:8;       size:8; signed:0;
-//         field:unsigned long ip; offset:16;      size:8; signed:0;
-//         field:unsigned long error_code; offset:24;      size:8; signed:0;
-
-// print fmt: "address=%ps ip=%ps error_code=0x%lx", (void *)REC->address, (void *)REC->ip, REC->error_code
-
-// struct trace_event_raw_sched_process_exec {
-//         struct trace_entry ent;
-//         u32 __data_loc_filename;
-//         pid_t pid;
-//         pid_t old_pid;
-//         char __data[0];
-// };
-// name: sched_process_exec
-// ID: 311
-// format:
-//         field:unsigned short common_type;       offset:0;       size:2; signed:0;
-//         field:unsigned char common_flags;       offset:2;       size:1; signed:0;
-//         field:unsigned char common_preempt_count;       offset:3;       size:1; signed:0;
-//         field:int common_pid;   offset:4;       size:4; signed:1;
-
-//         field:__data_loc char[] filename;       offset:8;       size:4; signed:1;
-//         field:pid_t pid;        offset:12;      size:4; signed:1;
-//         field:pid_t old_pid;    offset:16;      size:4; signed:1;
-
-// print fmt: "filename=%s pid=%d old_pid=%d", __get_str(filename), REC->pid, REC->old_pid
 const volatile unsigned long long min_duration_ns = 0;
 
 SEC("tp/sched/sched_process_exec")

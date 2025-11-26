@@ -17,7 +17,6 @@
 #include "bootstrap.skel.h"
 #include "policy.h"
 
-long PAGE_SIZE;
 #define QD	64
 #define PAGEMAP_ENTRY 8
 #define PAGE_PRESENT(v)   ((v >> 63) & 1)
@@ -29,6 +28,12 @@ static int infd, outfd;
 static khash_t(prefetch) *prefetching = NULL;
 static const policy_t *policy = NULL;
 static policy_ctx_t *policy_ctx = NULL;
+struct io_uring ring;
+
+__attribute__((constructor))
+static void init_page_size(void) {
+    PAGE_SIZE = getpagesize();
+}
 
 static struct env {
 	bool verbose;
@@ -178,7 +183,6 @@ unsigned long get_physical_address(unsigned long pid, unsigned long vaddr) {
       printf("Error! Cannot open pagemap %s\n", path);
       return -1;
    	}
-	PAGE_SIZE = getpagesize();
 
 	off_t off = (vaddr / PAGE_SIZE) * PAGEMAP_ENTRY;
 
@@ -218,27 +222,6 @@ unsigned long get_physical_address(unsigned long pid, unsigned long vaddr) {
     return phys;
 }
 
-// Check if the page is already in the prefetch set
-static int check_page_in_flight(uint64_t page) {
-	khiter_t k = kh_get(page_set, prefetching, page);
-
-	if (k != kh_end(prefetching)) {
-		printf("Page 0x%lx already being prefetched, skipping\n", page);
-		return 0;
-	}
-}
-
-void on_prefetch_complete(uint64_t page)
-{
-    khiter_t k = kh_get(page_set, prefetching, page);
-    if (k != kh_end(prefetching))
-        kh_del(page_set, prefetching, k);
-}
-
-void add_page_prefetch_set(uint64_t page) {
-	
-}
-
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	const struct event *e = data;
@@ -252,8 +235,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
 	/* Page-fault event (type == 2) */
 	if (e->type == 2) {
-		unsigned long phyadd = get_physical_address(e->pid, e->address);
-		printf("%lx\n" ,phyadd);
+		// unsigned long phyadd = get_physical_address(e->pid, e->address);
+		// printf("%lx\n" ,phyadd);
 		printf("%-8s %-5s %-16s %-7d %lx address=0x%lx ip=0x%lx\n",
 		       ts, "FAULT", e->comm, e->pid, e->cgroup_id, e->address, e->ip);
 
@@ -275,7 +258,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 			if (prefetch_set_contains(prefetching, target_page))
 				continue;
 			
-			submit_prefetch(&ring, targets[i]);  // you implement this
+			// submit_prefetch(&ring, targets[i]);  // you implement this
 			prefetch_set_add(prefetching, target_page);            // track outstanding reads
 		}
 
@@ -286,16 +269,16 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 		return 0;
 	}
 	
-	if (e->exit_event) {
-		printf("%-8s %-5s %-16s %-7d %-7d [%u]",
-		       ts, "EXIT", e->comm, e->pid, e->ppid, e->exit_code);
-		if (e->duration_ns)
-			printf(" (%llums)", e->duration_ns / 1000000);
-		printf("\n");
-	} else {
-		printf("%-8s %-5s %-16s %-7d %-7d %s\n",
-		       ts, "EXEC", e->comm, e->pid, e->ppid, e->filename);
-	}
+	// if (e->exit_event) {
+	// 	printf("%-8s %-5s %-16s %-7d %-7d [%u]",
+	// 	       ts, "EXIT", e->comm, e->pid, e->ppid, e->exit_code);
+	// 	if (e->duration_ns)
+	// 		printf(" (%llums)", e->duration_ns / 1000000);
+	// 	printf("\n");
+	// } else {
+	// 	printf("%-8s %-5s %-16s %-7d %-7d %s\n",
+	// 	       ts, "EXEC", e->comm, e->pid, e->ppid, e->filename);
+	// }
 
 	return 0;
 }
@@ -307,7 +290,7 @@ int main(int argc, char **argv)
 	struct io_uring ring;
 	policy = policy_sequential();       // or stride(), none(), etc.
     policy_ctx = policy->init(); 
-	prefetch_set_t *prefetching = prefetch_set_create()
+	prefetch_set_t *prefetching = prefetch_set_create();
 	int err;
 
 	if (!policy_ctx) {
@@ -319,6 +302,10 @@ int main(int argc, char **argv)
         fprintf(stderr, "Failed to create prefetch set\n");
         return 1;
     }
+
+	/* Set up io_uring*/
+	if (setup_context(QD, &ring))
+		return 1;
 
 	/* Parse command line arguments */
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
@@ -363,9 +350,6 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Failed to create ring buffer\n");
 		goto cleanup;
 	}
-	/* Set up io_uring*/
-	if (setup_context(QD, &ring))
-		return 1;
 
 	/* Process events */
 	printf("%-8s %-5s %-16s %-7s %-7s %s\n",
