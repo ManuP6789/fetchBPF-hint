@@ -15,6 +15,7 @@
 #include "prefetch_set.h"
 #include <bpf/libbpf.h>
 #include "bootstrap.skel.h"
+#include "policy.h"
 
 long PAGE_SIZE;
 #define QD	64
@@ -25,7 +26,9 @@ long PAGE_SIZE;
 const int __endian_bit = 1;
 #define is_bigendian() ( (*(char*)&__endian_bit) == 0 )
 static int infd, outfd;
-static khash_t(page_set) *prefetching = NULL;
+static khash_t(prefetch) *prefetching = NULL;
+static const policy_t *policy = NULL;
+static policy_ctx_t *policy_ctx = NULL;
 
 static struct env {
 	bool verbose;
@@ -232,6 +235,10 @@ void on_prefetch_complete(uint64_t page)
         kh_del(page_set, prefetching, k);
 }
 
+void add_page_prefetch_set(uint64_t page) {
+	
+}
+
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	const struct event *e = data;
@@ -255,27 +262,30 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 		uint64_t page = vaddr >> 12;
 		
 		// Check if the page is already in the prefetch set
-        if (check_page_in_flight(page) == 1) {
+        if (prefetch_set_contains(prefetching, page)) {
 			return 1;
 		} 
 
-		k = kh_put(page_set, prefetching, page, &ret);
-
-		if (ret > 0) {
-			printf("Tracking new prefetched page: 0x%lx\n", page);
-		}
-
+		// Call prefetcher to get page addresses to prefetch with io_uring
 		uint64_t targets[16];   // max prefetch count
 		size_t n = policy->compute_prefetch(policy_ctx, vaddr, targets, 16);
 
-		// Call prefetcher to get page addresses to prefetch with io_uring
-		
+		for (size_t i = 0; i < n; i++) {
+			uint64_t target_page = targets[i] >> 12;
+			if (prefetch_set_contains(prefetching, target_page))
+				continue;
+			
+			submit_prefetch(&ring, targets[i]);  // you implement this
+			prefetch_set_add(prefetching, target_page);            // track outstanding reads
+		}
 
+		
+		
 		// submit prefetch
 		// Read prefetches and remove from set  
 		return 0;
 	}
-
+	
 	if (e->exit_event) {
 		printf("%-8s %-5s %-16s %-7d %-7d [%u]",
 		       ts, "EXIT", e->comm, e->pid, e->ppid, e->exit_code);
@@ -295,8 +305,20 @@ int main(int argc, char **argv)
 	struct ring_buffer *rb = NULL;
 	struct bootstrap_bpf *skel;
 	struct io_uring ring;
-	khash_t(page_set) *prefetching = kh_init(page_set);
+	policy = policy_sequential();       // or stride(), none(), etc.
+    policy_ctx = policy->init(); 
+	prefetch_set_t *prefetching = prefetch_set_create()
 	int err;
+
+	if (!policy_ctx) {
+        fprintf(stderr, "Failed to initialize policy\n");
+        return 1;
+    }
+
+	if (!prefetching) {
+        fprintf(stderr, "Failed to create prefetch set\n");
+        return 1;
+    }
 
 	/* Parse command line arguments */
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
@@ -366,6 +388,7 @@ cleanup:
 	io_uring_queue_exit(&ring);
 	ring_buffer__free(rb);
 	bootstrap_bpf__destroy(skel);
-
+	prefetch_set_destroy(prefetching);
+	policy->destroy(policy_ctx);
 	return err < 0 ? -err : 0;
 }
