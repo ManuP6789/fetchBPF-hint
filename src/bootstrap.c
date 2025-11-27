@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
 #include <sys/resource.h>
@@ -29,6 +30,7 @@ static khash_t(prefetch) *prefetching = NULL;
 static const policy_t *policy = NULL;
 static policy_ctx_t *policy_ctx = NULL;
 struct io_uring ring;
+long PAGE_SIZE = 0; 
 
 __attribute__((constructor))
 static void init_page_size(void) {
@@ -106,6 +108,15 @@ static void sig_handler(int sig)
 	exiting = true;
 }
 
+uint64_t get_cgroup_id(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        perror("stat");
+        return 0;
+    }
+    return st.st_ino;  // the kernel uses the inode as the cgroup ID
+}
+
 /* ===============================
  * io_uring helpers
  * =============================== */
@@ -130,7 +141,7 @@ static void queue_prepped(struct io_uring *ring, struct io_data *data)
 	assert(sqe);
 
 	if (data->read)
-		io_uring_prep_readv(sqe, infd, &data->iov, 1, data->offset);
+		(sqe, infd, &data->iov, 1, data->offset);
 	else
 		io_uring_prep_writev(sqe, outfd, &data->iov, 1, data->offset);
 
@@ -292,6 +303,9 @@ int main(int argc, char **argv)
     policy_ctx = policy->init(); 
 	prefetch_set_t *prefetching = prefetch_set_create();
 	int err;
+
+	uint64_t cg_id = get_cgroup_id("/sys/fs/cgroup/prefetch");
+    printf("Cgroup ID: %lu\n", cg_id);
 
 	if (!policy_ctx) {
         fprintf(stderr, "Failed to initialize policy\n");

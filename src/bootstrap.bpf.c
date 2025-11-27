@@ -20,6 +20,13 @@ struct {
 	__uint(max_entries, 256 * 1024);
 } rb SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} target_cgroup SEC(".maps");
+
 struct trace_event_raw_exceptions_page_fault_user {
 	struct trace_entry ent;
 	unsigned long address;
