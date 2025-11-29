@@ -159,3 +159,9 @@ int handle_fault(struct trace_event_raw_exceptions_page_fault_user* ctx) {
 	bpf_ringbuf_submit(e, 0);
 	return 0;
 }
+
+SEC("tracepoint/syscalls/sys_enter_mmap")
+int tp_sys_enter_mmap(struct syscall_enter_mmap_args *ctx)
+{
+    
+}

@@ -17,6 +17,7 @@
 #include <bpf/libbpf.h>
 #include "bootstrap.skel.h"
 #include "policy.h"
+#include "maps.h"
 
 #define QD	64
 #define PAGEMAP_ENTRY 8
@@ -299,10 +300,14 @@ int main(int argc, char **argv)
 	struct ring_buffer *rb = NULL;
 	struct bootstrap_bpf *skel;
 	struct io_uring ring;
+	struct maps_cache_t *maps_c;
 	policy = policy_sequential();       // or stride(), none(), etc.
     policy_ctx = policy->init(); 
 	prefetch_set_t *prefetching = prefetch_set_create();
 	int err;
+
+	maps_c = maps_load_from_pid(2088);
+
 
 	uint64_t cg_id = get_cgroup_id("/sys/fs/cgroup/prefetch");
     printf("Cgroup ID: %lu\n", cg_id);
@@ -387,6 +392,7 @@ cleanup:
 	ring_buffer__free(rb);
 	bootstrap_bpf__destroy(skel);
 	prefetch_set_destroy(prefetching);
+	maps_free(maps_c);
 	policy->destroy(policy_ctx);
 	return err < 0 ? -err : 0;
 }

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <string.h>
 
 struct maps_cache {
     map_region_t *regions;
@@ -12,7 +13,7 @@ struct maps_cache {
 
 int cmp_regions(const void *a, const void *b) {
     const map_region_t *ra = a;
-    const map_region_t *rb = b,
+    const map_region_t *rb = b;
     return (ra->start > rb->start) - (ra->start < rb->start);
 }
 
@@ -57,8 +58,8 @@ static map_region_t parse_maps_line(const char *line) {
         return r;
     }
 
-    strncpy(r.pathname, p, PATH_MAX - 1);
-    r.pathname[PATH_MAX - 1] = '\0';
+    strncpy(r.pathname, p, PATH_MAX_MAP - 1);
+    r.pathname[PATH_MAX_MAP - 1] = '\0';
 
     size_t L = strlen(r.pathname);
     if (L > 0 && r.pathname[L - 1] == '\n')
@@ -76,10 +77,16 @@ static map_region_t parse_maps_line(const char *line) {
 maps_cache_t* maps_load_from_pid(pid_t pid) {
     char path[64];
     char line[512];
-    sprintf(path, "/proc/%ld/maps", pid);
+    sprintf(path, "/proc/%d/maps", pid);
     map_region_t *regions = NULL;
     size_t count = 0;
-    maps_cache_t cache = {0};
+    maps_cache_t *cache = malloc(sizeof(maps_cache_t));
+    if (!cache) {
+        perror("calloc");
+        return NULL;
+    }
+    cache->regions = NULL;
+    cache->count = 0;
 
     // open /proc/<pid>/maps
     int fd = open(path, O_RDONLY);
@@ -104,8 +111,8 @@ maps_cache_t* maps_load_from_pid(pid_t pid) {
     }
     // fill map_region_t entries
     qsort(regions, count, sizeof(map_region_t), cmp_regions);
-    cache.regions = regions;
-    cache.count = count;
+    cache->regions = regions;
+    cache->count = count;
 
     return cache;
 }
@@ -128,7 +135,10 @@ const map_region_t *maps_lookup(maps_cache_t *cache, uint64_t addr) {
 
 
 void maps_free(maps_cache_t *cache) {
+    if (!cache) return;
 
+    free(cache->regions);  
+    free(cache);            
 }
 
 

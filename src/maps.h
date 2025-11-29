@@ -6,14 +6,14 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-const int PATH_MAX = 512;
+#define PATH_MAX_MAP 512
 typedef struct {
     uint64_t start;
     uint64_t end;
     uint64_t offset;
     uint64_t inode;
-    char pathname[PATH_MAX]; 
-    bool file_backed;   // file backing (if any)
+    char pathname[PATH_MAX_MAP]; 
+    bool file_backed;
 } map_region_t;
 
 typedef struct maps_cache maps_cache_t;
