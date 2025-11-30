@@ -234,63 +234,52 @@ unsigned long get_physical_address(unsigned long pid, unsigned long vaddr) {
     return phys;
 }
 
+static int handle_fault(struct event *e) {
+	printf("%-5s %-7d %lx address=0x%lx ip=0x%lx\n",
+			"FAULT", e->pid, e->cgroup_id, e->address, e->ip);
+
+	
+	uint64_t vaddr = e->address;
+	uint64_t page = vaddr >> 12;
+	
+	// Check if the page is already in the prefetch set
+	if (prefetch_set_contains(prefetching, page)) {
+		return 1;
+	} 
+
+	// Call prefetcher to get page addresses to prefetch with io_uring
+	uint64_t targets[32];   // max prefetch count
+	size_t n = policy->compute_prefetch(policy_ctx, vaddr, targets, 32);
+
+	for (size_t i = 0; i < n; i++) {
+		uint64_t target_page = targets[i] >> 12;
+		if (prefetch_set_contains(prefetching, target_page))
+			continue;
+		
+		// submit_prefetch(&ring, targets[i]);  // you implement this
+		prefetch_set_add(prefetching, target_page);            // track outstanding reads
+	}
+
+	
+	
+	// submit prefetch
+	// Read prefetches and remove from set  
+	return 0;
+} 
+
+static int handle_mmap(struct event *e) {
+	printf("%-5s %-7d %lx address=0x%lx ip=0x%lx\n",
+			"MMAP", e->pid, e->cgroup_id, e->address, e->ip, );
+}
+
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	const struct event *e = data;
-	struct tm *tm;
-	char ts[32];
-	time_t t;
 
-	time(&t);
-	tm = localtime(&t);
-	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
-
-	/* Page-fault event (type == 2) */
-	if (e->type == 2) {
-		// unsigned long phyadd = get_physical_address(e->pid, e->address);
-		// printf("%lx\n" ,phyadd);
-		printf("%-8s %-5s %-16s %-7d %lx address=0x%lx ip=0x%lx\n",
-		       ts, "FAULT", e->comm, e->pid, e->cgroup_id, e->address, e->ip);
-
-		
-		uint64_t vaddr = e->address;
-		uint64_t page = vaddr >> 12;
-		
-		// Check if the page is already in the prefetch set
-        if (prefetch_set_contains(prefetching, page)) {
-			return 1;
-		} 
-
-		// Call prefetcher to get page addresses to prefetch with io_uring
-		uint64_t targets[16];   // max prefetch count
-		size_t n = policy->compute_prefetch(policy_ctx, vaddr, targets, 16);
-
-		for (size_t i = 0; i < n; i++) {
-			uint64_t target_page = targets[i] >> 12;
-			if (prefetch_set_contains(prefetching, target_page))
-				continue;
-			
-			// submit_prefetch(&ring, targets[i]);  // you implement this
-			prefetch_set_add(prefetching, target_page);            // track outstanding reads
-		}
-
-		
-		
-		// submit prefetch
-		// Read prefetches and remove from set  
-		return 0;
+	switch (e->type) {
+		case EVENT_PAGEFAULT: handle_fault(e); break;
+		case EVENT_MMAP:	  handle_mmap(e); break;
 	}
-	
-	// if (e->exit_event) {
-	// 	printf("%-8s %-5s %-16s %-7d %-7d [%u]",
-	// 	       ts, "EXIT", e->comm, e->pid, e->ppid, e->exit_code);
-	// 	if (e->duration_ns)
-	// 		printf(" (%llums)", e->duration_ns / 1000000);
-	// 	printf("\n");
-	// } else {
-	// 	printf("%-8s %-5s %-16s %-7d %-7d %s\n",
-	// 	       ts, "EXEC", e->comm, e->pid, e->ppid, e->filename);
-	// }
 
 	return 0;
 }

@@ -3,34 +3,66 @@
 #ifndef __BOOTSTRAP_H
 #define __BOOTSTRAP_H
 
-#define TASK_COMM_LEN 16
-#define MAX_FILENAME_LEN 127
 extern long PAGE_SIZE;
+#define MAX_FILENAME_LEN 127
 
 #include <stdbool.h>
 
 
 /* event.type:
- *  0 - exec/exit event (original)
- *  1 - exec event (kept for readability; we use exit_event flag for exit)
+ *  0 - mmap event 
+ *  1 - mremap event
  *  2 - page-fault event
- */
+ *  3 - munmap event 
+ */ 
+#define EVENT_MMAP 0
+#define EVENT_MREMAP 1
+#define EVENT_PAGEFAULT 2
+#define EVENT_MUNMAP 3
+
 struct event {
-	int pid;
-	int ppid;
-	unsigned exit_code;
-	unsigned long long duration_ns;
-	char comm[TASK_COMM_LEN];
-	char filename[MAX_FILENAME_LEN];
-	bool exit_event;
-
-	/* simple tag to distinguish event types */
 	int type;
-
-	/* page-fault fields (valid when type == 2) */
+	int pid;
 	unsigned long address;
-	unsigned long ip;
-	unsigned long cgroup_id;
+	unsigned long old_address; 			// for mremap
+	unsigned long new_len;     			// for mremap
+	unsigned long ip;		   			// for pagefaultd
+	unsigned long fd;
+	unsigned long offset;	   			// for mmap
+    unsigned long inode;	   			// for mmap
+	char filename[MAX_FILENAME_LEN];	// for mmap
+};
+
+struct enter_key {
+    uint32_t pid;
+    uint32_t tid;
+    uint32_t type;    // 0=mmap, 1=mremap, 3=munmap
+};
+
+struct syscall_enter_mmap_args {
+    unsigned short common_type;
+    unsigned char  common_flags;
+    unsigned char  common_preempt_count;
+    int common_pid;
+
+    int __syscall_nr;
+
+    unsigned long addr;
+    unsigned long len;
+    unsigned long prot;
+    unsigned long flags;
+    unsigned long fd;
+    unsigned long off;
+};
+
+struct syscall_exit_mmap_args {
+	unsigned short common_type;
+	unsigned char common_flags;
+	unsigned char common_preempt_count;
+	int common_pid;
+
+	int __syscall_nr;
+	long ret;
 };
 
 #endif /* __BOOTSTRAP_H */
