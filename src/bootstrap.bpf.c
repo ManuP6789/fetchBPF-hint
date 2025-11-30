@@ -27,6 +27,15 @@ struct {
     __type(value, u64);
 } target_cgroup SEC(".maps");
 
+struct trace_event_raw_exceptions_page_fault_user {
+	struct trace_entry ent;
+	unsigned long address;
+	unsigned long ip;
+	unsigned long error_code;
+};
+
+const volatile unsigned long long min_duration_ns = 0;
+
 SEC("tp/exceptions/page_fault_user")
 int handle_fault(struct trace_event_raw_exceptions_page_fault_user* ctx) {
 	struct event *e;
@@ -46,10 +55,8 @@ int handle_fault(struct trace_event_raw_exceptions_page_fault_user* ctx) {
 
 	e->type = EVENT_PAGEFAULT;                 
 	e->pid = pid;
-	e->cgroup_id = bpf_get_current_cgroup_id();
 	e->address = addr;
 	e->ip = ip;
-	e->
 
 	/* submit to userspace */
 	bpf_ringbuf_submit(e, 0);
@@ -57,7 +64,7 @@ int handle_fault(struct trace_event_raw_exceptions_page_fault_user* ctx) {
 }
 
 SEC("tracepoint/syscalls/sys_enter_mmap")
-int tp_sys_enter_mmap(struct syscall_enter_mmap_args *ctx)
+int tp_sys_enter_mmap(struct sys_enter_mmap_args *ctx)
 {
 	struct event *e;
 	struct enter_key *key;
@@ -92,7 +99,6 @@ int tp_sys_enter_mmap(struct syscall_enter_mmap_args *ctx)
 	e->type = EVENT_MMAP;
 	e->pid = pid;
 	e->address = addr;
-	e->cgroup_id = cgid;
 	e->ip = 0; 
 	e->new_len = len;
 	e->fd = fd;
@@ -104,8 +110,39 @@ int tp_sys_enter_mmap(struct syscall_enter_mmap_args *ctx)
 	return 0;
 }
 
+static __always_inline int resolve_file_info(int fd, u64 *inode_out, char* path_out, int path_len) {
+	struct file *file;
+    struct file **fd_array;
+	struct task_struct *task;
+	struct fdtable *fdt;
+	struct files_struct *files;
+	struct path f_path;
+
+	// get task->files->fdt
+	task = (struct task_struct *)bpf_get_current_task();
+	files = BPF_CORE_READ(task, files);
+	fdt = BPF_CORE_READ(files, fdt);
+
+	// extract the fd array pointer
+    fd_array = BPF_CORE_READ(fdt, fd);
+    if (!fd_array)
+        return -1;
+
+	bpf_probe_read_kernel(&file, sizeof(file), &fd_array[fd]);
+	
+	*inode_out = BPF_CORE_READ(file, f_inode, i_ino);
+
+	// obtain path
+	f_path = BPF_CORE_READ(file, f_path);
+
+	// resolve path string
+	bpf_d_path(&f_path, path_out, path_len);
+
+	return 0;
+}
+
 SEC("tracepoint/syscalls/sys_exit_mmap")
-int tp_sys_exit_mmap(struct syscall_exit_mmap_args *ctx)
+int tp_sys_exit_mmap(struct sys_exit_mmap_args *ctx)
 {
 	struct event *e;
 	struct enter_key key = {};
@@ -133,12 +170,11 @@ int tp_sys_exit_mmap(struct syscall_exit_mmap_args *ctx)
 	}
 
 	u64 inode = 0;
-	char path[256] = {};
 
 	if (e->fd >= 0) {
 		if (resolve_file_info(e->fd, &inode, path, sizeof(path)) == 0) {
 			e->inode = inode;
-			bpf_probe_read_kernel_str(e->filename, sizeof(e->filename), path);
+			// bpf_probe_read_kernel_str(e->filename, sizeof(e->filename), path);
 		}
 	}
 
@@ -150,30 +186,5 @@ int tp_sys_exit_mmap(struct syscall_exit_mmap_args *ctx)
 	__builtin_memcpy(rb_e, e, sizeof(*e));
 
 	bpf_ringbuf_submit(rb_e, 0);
-	return 0;
-}
-
-static __always_inline int resolve_file_info(int fd, u64 *inode_out, char* path_out, int path_len) {
-	struct file *file;
-	struct task_struct *task;
-	struct fdtable *fdt;
-	struct files_struct *files;
-	struct path f_path;
-
-	task = (struct task_struct *)bpf_get_current_task();
-	files = BPF_CORE_READ(task, files);
-	fdt = BPF_CORE_READ(files, fdt);
-
-	// array of file
-	file = BPF_CORE_READ(fdt, fd, fd);
-	if(!file)
-		return -1;
-	
-	*inode_out = BPF_CORE_READ(file, f_inode, i_ino);
-
-	// obtain path
-	f_path = BPF_CORE_READ(file, f_path);
-	bpf_d_path(&f_path, path_out, path_len);
-
 	return 0;
 }

@@ -30,16 +30,16 @@ struct event {
 	unsigned long fd;
 	unsigned long offset;	   			// for mmap
     unsigned long inode;	   			// for mmap
-	char filename[MAX_FILENAME_LEN];	// for mmap
+	// char filename[MAX_FILENAME_LEN];	// for mmap
 };
 
 struct enter_key {
-    uint32_t pid;
-    uint32_t tid;
-    uint32_t type;    // 0=mmap, 1=mremap, 3=munmap
+    int pid;
+    int tid;
+    int type;    // 0=mmap, 1=mremap, 3=munmap
 };
 
-struct syscall_enter_mmap_args {
+struct sys_enter_mmap_args {
     unsigned short common_type;
     unsigned char  common_flags;
     unsigned char  common_preempt_count;
@@ -55,7 +55,22 @@ struct syscall_enter_mmap_args {
     unsigned long off;
 };
 
-struct syscall_exit_mmap_args {
+struct sys_enter_mremap_args {
+	unsigned short common_type;
+    unsigned char  common_flags;
+    unsigned char  common_preempt_count;
+    int common_pid;
+
+    int __syscall_nr;
+
+    unsigned long addr;
+    unsigned long old_len;
+    unsigned long new_len;
+    unsigned long flags;
+    unsigned long new_addr;
+};
+
+struct sys_exit_mmap_args {
 	unsigned short common_type;
 	unsigned char common_flags;
 	unsigned char common_preempt_count;
@@ -64,5 +79,26 @@ struct syscall_exit_mmap_args {
 	int __syscall_nr;
 	long ret;
 };
+
+struct sys_exit_mremap_args {
+	unsigned short common_type;
+	unsigned char common_flags;
+	unsigned char common_preempt_count;
+	int common_pid;
+
+	int __syscall_nr;
+	long ret;
+};
+
+struct sys_exit_munmap_args {
+	unsigned short common_type;
+	unsigned char common_flags;
+	unsigned char common_preempt_count;
+	int common_pid;
+
+	int __syscall_nr;
+	long ret;
+};
+
 
 #endif /* __BOOTSTRAP_H */

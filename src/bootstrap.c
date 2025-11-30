@@ -234,18 +234,16 @@ unsigned long get_physical_address(unsigned long pid, unsigned long vaddr) {
     return phys;
 }
 
-static int handle_fault(struct event *e) {
-	printf("%-5s %-7d %lx address=0x%lx ip=0x%lx\n",
-			"FAULT", e->pid, e->cgroup_id, e->address, e->ip);
+static int handle_fault(const struct event *e) {
+	printf("%-5s %-7d address=0x%lx ip=0x%lx\n",
+			"FAULT", e->pid, e->address, e->ip);
 
-	
 	uint64_t vaddr = e->address;
 	uint64_t page = vaddr >> 12;
 	
 	// Check if the page is already in the prefetch set
-	if (prefetch_set_contains(prefetching, page)) {
+	if (prefetch_set_contains(prefetching, page))
 		return 1;
-	} 
 
 	// Call prefetcher to get page addresses to prefetch with io_uring
 	uint64_t targets[32];   // max prefetch count
@@ -267,9 +265,10 @@ static int handle_fault(struct event *e) {
 	return 0;
 } 
 
-static int handle_mmap(struct event *e) {
-	printf("%-5s %-7d %lx address=0x%lx ip=0x%lx\n",
-			"MMAP", e->pid, e->cgroup_id, e->address, e->ip, );
+static int handle_mmap(const struct event *e) {
+	printf("%-5s %-7d address=0x%lx ip=0x%lx\n",
+			"MMAP", e->pid, e->address, e->ip);
+	return 0;
 }
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
