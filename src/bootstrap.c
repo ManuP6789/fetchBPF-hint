@@ -118,6 +118,51 @@ uint64_t get_cgroup_id(const char *path) {
     return st.st_ino;  // the kernel uses the inode as the cgroup ID
 }
 
+pid_t get_single_pid_in_cgroup(const char *cgpath) {
+    char procs_path[512];
+    snprintf(procs_path, sizeof(procs_path), "%s/cgroup.procs", cgpath);
+
+    FILE *f = fopen(procs_path, "r");
+    if (!f) {
+        return -1; 
+    }
+
+    long first_pid = -1;
+    long second_pid = -1;
+
+    if (fscanf(f, "%ld", &first_pid) != 1) {
+        fclose(f);
+        errno = ESRCH;   // "no such process"
+        return -1;
+    }
+
+    // Check if there's a second PID
+    if (fscanf(f, "%ld", &second_pid) == 1) {
+        fclose(f);
+        errno = EBUSY;   // "resource busy" (too many processes)
+        return -1;
+    }
+
+    fclose(f);
+    return (pid_t)first_pid;
+}
+
+int wait_for_pid_in_cgroup(const char *cgpath)
+{
+    const int step_ms = 100;    // poll every 100ms
+    int waited = 0;
+
+    while (1) {
+        int pid = get_single_pid_in_cgroup(cgpath);
+        if (pid > 0) {
+            return pid;  // found it!
+        }
+
+        usleep(step_ms * 1000);
+        waited += step_ms;
+    }
+}
+
 /* ===============================
  * io_uring helpers
  * =============================== */
@@ -271,6 +316,18 @@ static int handle_mmap(const struct event *e) {
 	return 0;
 }
 
+static int handle_mremap(const struct event *e) {
+	printf("%-5s %-7d address=0x%lx ip=0x%lx\n",
+			"MREMAP", e->pid, e->address, e->ip);
+	return 0;
+}
+
+static int handle_munmap(const struct event *e) {
+	printf("%-5s %-7d address=0x%lx ip=0x%lx\n",
+			"MUNMAP", e->pid, e->address, e->ip);
+	return 0;
+}
+
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	const struct event *e = data;
@@ -278,13 +335,14 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	switch (e->type) {
 		case EVENT_PAGEFAULT: handle_fault(e); break;
 		case EVENT_MMAP:	  handle_mmap(e); break;
+		case EVENT_MREMAP:	  handle_mremap(e); break;
+		case EVENT_MUNMAP:	  handle_munmap(e); break;
 	}
 
 	return 0;
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
 	struct ring_buffer *rb = NULL;
 	struct bootstrap_bpf *skel;
 	struct io_uring ring;
@@ -294,11 +352,13 @@ int main(int argc, char **argv)
 	prefetch_set_t *prefetching = prefetch_set_create();
 	int err;
 
-	maps_c = maps_load_from_pid(2088);
-
-
 	uint64_t cg_id = get_cgroup_id("/sys/fs/cgroup/prefetch");
     printf("Cgroup ID: %lu\n", cg_id);
+
+	int target_pid = wait_for_pid_in_cgroup("/sys/fs/cgroup/prefetch");
+
+	printf("Found process in cgroup: PID=%d\n", target_pid);
+	maps_c = maps_load_from_pid(target_pid);
 
 	if (!policy_ctx) {
         fprintf(stderr, "Failed to initialize policy\n");
@@ -342,6 +402,19 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Failed to load and verify BPF skeleton\n");
 		goto cleanup;
 	}
+
+	int map_fd = bpf_map__fd(skel->maps.target_cgroup);
+	if (map_fd < 0) {
+		fprintf(stderr, "could not find target_cgroup map\n");
+		return 1;
+	}
+
+	uint32_t key = 0;
+    err = bpf_map_update_elem(map_fd, &key, &cg_id, BPF_ANY);
+    if (err < 0) {
+        perror("update cgroup map");
+        return 1;
+    }
 
 	/* Attach tracepoints */
 	err = bootstrap_bpf__attach(skel);

@@ -43,12 +43,17 @@ int handle_fault(struct trace_event_raw_exceptions_page_fault_user* ctx) {
 	pid_t pid;
 	u64 addr = ctx->address;
 	u64 ip = ctx->ip;
+	u64 cgid = bpf_get_current_cgroup_id();
+    u64 *allowed = bpf_map_lookup_elem(&target_cgroup, &(u32){0});
+
+    if (!allowed || cgid != *allowed)
+        return 0;
 	
-	/* get PID and TID of exiting thread/process */
+	// get PID and TID of exiting thread/process
 	id = bpf_get_current_pid_tgid();
 	pid = id >> 32;
 
-	/* reserve sample from BPF ringbuf */
+	// reserve sample from BPF ringbuf 
 	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
 	if (!e)
 		return 0;
@@ -58,133 +63,136 @@ int handle_fault(struct trace_event_raw_exceptions_page_fault_user* ctx) {
 	e->address = addr;
 	e->ip = ip;
 
-	/* submit to userspace */
+	// submit to userspace 
 	bpf_ringbuf_submit(e, 0);
 	return 0;
+}
+
+static __always_inline int handle_sys_enter_common(u32 type, u64 addr, u64 len,
+    											   			   		    u64 fd)
+{
+    u64 cgid = bpf_get_current_cgroup_id();
+    u64 *allowed = bpf_map_lookup_elem(&target_cgroup, &(u32){0});
+
+    if (!allowed || cgid != *allowed)
+        return 0;
+
+    struct enter_key key = {};
+    struct event e = {};
+
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    key.pid = pid_tgid >> 32;
+    key.tid = (u32)pid_tgid;
+    key.type = type;
+
+    e.type     = type;
+    e.pid      = key.pid;
+    e.address  = addr;
+    e.new_len  = len;
+    e.fd       = fd;
+    e.ip       = 0;       
+
+    bpf_map_update_elem(&map_start, &key, &e, BPF_ANY);
+    return 0;
 }
 
 SEC("tracepoint/syscalls/sys_enter_mmap")
 int tp_sys_enter_mmap(struct sys_enter_mmap_args *ctx)
 {
-	struct event *e;
-	struct enter_key *key;
-	pid_t pid;
-	u32 tid;
-    unsigned long addr = ctx->addr;
-    unsigned long len  = ctx->len;
-    unsigned long off  = ctx->off;
-    unsigned long fd   = ctx->fd;
-	u64 cgid = bpf_get_current_cgroup_id();
-	u64 *allowed = bpf_map_lookup_elem(&target_cgroup, &(u32){0});
-
-	if (!allowed)
-		return 0;
-
-	if (cgid != *allowed) 
-		return 0;
-
-	/* allocate key and event on stack */
-	struct enter_key stack_key = {};
-	struct event stack_event = {};
-	key = &stack_key;
-	e = &stack_event;
-
-	pid = bpf_get_current_pid_tgid() >> 32;
-	tid = (u32)bpf_get_current_pid_tgid();
-
-	key->pid = pid;
-	key->tid = tid;
-	key->type = EVENT_MMAP;
-
-	e->type = EVENT_MMAP;
-	e->pid = pid;
-	e->address = addr;
-	e->ip = 0; 
-	e->new_len = len;
-	e->fd = fd;
-	e->offset = off;
-	e->inode = 0;
-
-
-	bpf_map_update_elem(&map_start, key, e, BPF_ANY);
-	return 0;
+	return handle_sys_enter_common(EVENT_MMAP, ctx->addr, ctx->len, ctx->fd);
 }
 
-static __always_inline int resolve_file_info(int fd, u64 *inode_out, char* path_out, int path_len) {
-	struct file *file;
-    struct file **fd_array;
-	struct task_struct *task;
-	struct fdtable *fdt;
-	struct files_struct *files;
-	struct path f_path;
+SEC("tracepoint/syscalls/sys_enter_mremap")
+int tp_sys_enter_mremap(struct sys_enter_mremap_args *ctx)
+{
+	return handle_sys_enter_common(EVENT_MREMAP,ctx->addr, ctx->new_len, 0);
+}
 
-	// get task->files->fdt
-	task = (struct task_struct *)bpf_get_current_task();
-	files = BPF_CORE_READ(task, files);
-	fdt = BPF_CORE_READ(files, fdt);
+SEC("tracepoint/syscalls/sys_enter_munmap")
+int tp_sys_enter_munmap(struct sys_enter_munmap_args *ctx)
+{
+	return handle_sys_enter_common(EVENT_MUNMAP, ctx->addr, ctx->len, 0);
+}
 
-	// extract the fd array pointer
-    fd_array = BPF_CORE_READ(fdt, fd);
-    if (!fd_array)
-        return -1;
+// static __always_inline int resolve_file_info(int fd, u64 *inode_out, char* path_out, int path_len) {
+// 	struct file *file;
+//     struct file **fd_array;
+// 	struct task_struct *task;
+// 	struct fdtable *fdt;
+// 	struct files_struct *files;
+// 	struct path f_path;
 
-	bpf_probe_read_kernel(&file, sizeof(file), &fd_array[fd]);
+// 	// get task->files->fdt
+// 	task = (struct task_struct *)bpf_get_current_task();
+// 	files = BPF_CORE_READ(task, files);
+// 	fdt = BPF_CORE_READ(files, fdt);
+
+// 	// extract the fd array pointer
+//     fd_array = BPF_CORE_READ(fdt, fd);
+//     if (!fd_array)
+//         return -1;
+
+// 	bpf_probe_read_kernel(&file, sizeof(file), &fd_array[fd]);
 	
-	*inode_out = BPF_CORE_READ(file, f_inode, i_ino);
+// 	*inode_out = BPF_CORE_READ(file, f_inode, i_ino);
 
-	// obtain path
-	f_path = BPF_CORE_READ(file, f_path);
+// 	// obtain path
+// 	f_path = BPF_CORE_READ(file, f_path);
 
-	// resolve path string
-	bpf_d_path(&f_path, path_out, path_len);
+// 	// resolve path string
+// 	bpf_d_path(&f_path, path_out, path_len);
 
-	return 0;
+// 	return 0;
+// }
+
+static __always_inline int handle_sys_exit_common(u32 type, long ret)
+{
+    struct enter_key key = {};
+    struct event *e;
+
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    pid_t pid = pid_tgid >> 32;
+    u32 tid = (u32)pid_tgid;
+
+    key.pid = pid;
+    key.tid = tid;
+    key.type = type;
+
+    e = bpf_map_lookup_elem(&map_start, &key);
+    if (!e)
+        return 0;
+
+    bpf_map_delete_elem(&map_start, &key);
+
+    // if syscall failed dont emit event 
+    if (ret < 0)
+        return 0;
+
+    // push event to ring buffer 
+    struct event *rb_e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+    if (!rb_e)
+        return 0;
+
+    __builtin_memcpy(rb_e, e, sizeof(*e));
+    bpf_ringbuf_submit(rb_e, 0);
+    return 0;
 }
+
 
 SEC("tracepoint/syscalls/sys_exit_mmap")
 int tp_sys_exit_mmap(struct sys_exit_mmap_args *ctx)
 {
-	struct event *e;
-	struct enter_key key = {};
-	pid_t pid;
-	u32 tid;
-    long ret = ctx->ret;
+	return handle_sys_exit_common(EVENT_MMAP, ctx->ret);
+}
 
-	/* remember time exec() was executed for this PID */
-	pid = bpf_get_current_pid_tgid() >> 32;
-	tid = (u32)bpf_get_current_pid_tgid();
+SEC("tracepoint/syscalls/sys_exit_mremap")
+int tp_sys_exit_mremap(struct sys_exit_mremap_args *ctx)
+{
+	return handle_sys_exit_common(EVENT_MREMAP, ctx->ret);
+}
 
-	key.pid = pid;
-	key.tid = tid;
-	key.type = EVENT_MMAP;
-
-	/* if we recorded start of the process, calculate lifetime duration */
-	e = bpf_map_lookup_elem(&map_start, &key);
-
-	if (!e)
-		return 0;
-
-	bpf_map_delete_elem(&map_start, &key);
-	if (ret < 0) {
-		return 0;
-	}
-
-	u64 inode = 0;
-
-	if (e->fd >= 0) {
-		if (resolve_file_info(e->fd, &inode, path, sizeof(path)) == 0) {
-			e->inode = inode;
-			// bpf_probe_read_kernel_str(e->filename, sizeof(e->filename), path);
-		}
-	}
-
-	/* reserve sample from BPF ringbuf */
-	struct event *rb_e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!rb_e)
-		return 0;
-
-	__builtin_memcpy(rb_e, e, sizeof(*e));
-
-	bpf_ringbuf_submit(rb_e, 0);
-	return 0;
+SEC("tracepoint/syscalls/sys_exit_munmap")
+int tp_sys_exit_munmap(struct sys_exit_munmap_args *ctx)
+{
+	return handle_sys_exit_common(EVENT_MUNMAP, ctx->ret);
 }

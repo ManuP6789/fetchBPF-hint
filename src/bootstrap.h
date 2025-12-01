@@ -8,7 +8,6 @@ extern long PAGE_SIZE;
 
 #include <stdbool.h>
 
-
 /* event.type:
  *  0 - mmap event 
  *  1 - mremap event
@@ -28,8 +27,8 @@ struct event {
 	unsigned long new_len;     			// for mremap
 	unsigned long ip;		   			// for pagefaultd
 	unsigned long fd;
-	unsigned long offset;	   			// for mmap
-    unsigned long inode;	   			// for mmap
+	// unsigned long offset;	   			// for mmap
+    // unsigned long inode;	   			// for mmap
 	// char filename[MAX_FILENAME_LEN];	// for mmap
 };
 
@@ -68,6 +67,18 @@ struct sys_enter_mremap_args {
     unsigned long new_len;
     unsigned long flags;
     unsigned long new_addr;
+};
+
+struct sys_enter_munmap_args {
+	unsigned short common_type;
+    unsigned char  common_flags;
+    unsigned char  common_preempt_count;
+    int common_pid;
+
+    int __syscall_nr;
+
+    unsigned long addr;
+	unsigned long len;
 };
 
 struct sys_exit_mmap_args {
