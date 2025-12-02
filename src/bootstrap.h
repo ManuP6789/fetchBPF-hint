@@ -25,17 +25,16 @@ struct event {
 	unsigned long address;
 	unsigned long old_address; 			// for mremap
 	unsigned long new_len;     			// for mremap
-	unsigned long ip;		   			// for pagefaultd
+	unsigned long ip;		   			// for pagefault
 	unsigned long fd;
-	// unsigned long offset;	   			// for mmap
-    // unsigned long inode;	   			// for mmap
-	// char filename[MAX_FILENAME_LEN];	// for mmap
+	unsigned long maj;
+	unsigned long min;					// for pagefault
 };
 
 struct enter_key {
     int pid;
     int tid;
-    int type;    // 0=mmap, 1=mremap, 3=munmap
+    int type;  
 };
 
 struct sys_enter_mmap_args {

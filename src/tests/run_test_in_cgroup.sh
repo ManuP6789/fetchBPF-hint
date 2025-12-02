@@ -1,28 +1,56 @@
 #!/usr/bin/env bash
 set -e
 
+# --------------------------------------------------
+# Usage:
+#   ./run_test_in_cgroup.sh anon      # runs test_memory_ops
+#   ./run_test_in_cgroup.sh major     # runs test_major_faults
+# --------------------------------------------------
+
+MODE="$1"
+
+if [[ -z "$MODE" ]]; then
+    echo "Usage: $0 {anon|major}"
+    exit 1
+fi
+
 CGROUP="/sys/fs/cgroup/prefetch"
-TEST_PROG="./test_memory_ops"
 
 echo "[+] Creating cgroup at $CGROUP"
 sudo mkdir -p "$CGROUP"
 sudo chown $USER:$(id -gn) "$CGROUP"
 
-# Enable basic controllers for safety (idempotent)
+# Enable controllers
 echo "[+] Enabling subtree controllers"
 (
     cd /sys/fs/cgroup
-    echo "+memory" 2>/dev/null | sudo tee cgroup.subtree_control >/dev/null || true
-    echo "+pids"   2>/dev/null | sudo tee cgroup.subtree_control >/dev/null || true
+    echo "+memory" | sudo tee cgroup.subtree_control >/dev/null || true
+    echo "+pids"   | sudo tee cgroup.subtree_control >/dev/null || true
 )
 
-echo "[+] Compiling test program"
-gcc -O2 test_memory_ops.c -o test_memory_ops
+# --------------------------------------------------
+# Choose test program based on MODE
+# --------------------------------------------------
+if [[ "$MODE" == "anon" ]]; then
+    SRC="test_memory_ops.c"
+    BIN="./test_memory_ops"
+elif [[ "$MODE" == "major" ]]; then
+    # Ensure file exists for major fault test
+    echo "[+] Ensuring test_data.bin exists"
+    ./gen_testfile.sh
+    SRC="test_major_faults.c"
+    BIN="./test_major_faults"
+else
+    echo "Invalid mode: $MODE"
+    echo "Allowed: anon   major"
+    exit 1
+fi
 
-echo "[+] Starting test program (will get moved into cgroup immediately)"
+echo "[+] Compiling $SRC"
+gcc -O2 "$SRC" -o "$BIN"
 
-# Launch the program in background paused
-$TEST_PROG &
+echo "[+] Starting test program ($BIN)"
+$BIN &
 PID=$!
 
 echo "[+] Test program PID = $PID"

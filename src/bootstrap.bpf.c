@@ -49,7 +49,6 @@ int handle_fault(struct trace_event_raw_exceptions_page_fault_user* ctx) {
     if (!allowed || cgid != *allowed)
         return 0;
 	
-	// get PID and TID of exiting thread/process
 	id = bpf_get_current_pid_tgid();
 	pid = id >> 32;
 
@@ -57,11 +56,16 @@ int handle_fault(struct trace_event_raw_exceptions_page_fault_user* ctx) {
 	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
 	if (!e)
 		return 0;
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	u64 maj = BPF_CORE_READ(task, maj_flt);
+	u64 min = BPF_CORE_READ(task, min_flt);
 
 	e->type = EVENT_PAGEFAULT;                 
 	e->pid = pid;
 	e->address = addr;
 	e->ip = ip;
+	e->maj = maj;
+	e->min = min;
 
 	// submit to userspace 
 	bpf_ringbuf_submit(e, 0);
@@ -113,37 +117,6 @@ int tp_sys_enter_munmap(struct sys_enter_munmap_args *ctx)
 {
 	return handle_sys_enter_common(EVENT_MUNMAP, ctx->addr, ctx->len, 0);
 }
-
-// static __always_inline int resolve_file_info(int fd, u64 *inode_out, char* path_out, int path_len) {
-// 	struct file *file;
-//     struct file **fd_array;
-// 	struct task_struct *task;
-// 	struct fdtable *fdt;
-// 	struct files_struct *files;
-// 	struct path f_path;
-
-// 	// get task->files->fdt
-// 	task = (struct task_struct *)bpf_get_current_task();
-// 	files = BPF_CORE_READ(task, files);
-// 	fdt = BPF_CORE_READ(files, fdt);
-
-// 	// extract the fd array pointer
-//     fd_array = BPF_CORE_READ(fdt, fd);
-//     if (!fd_array)
-//         return -1;
-
-// 	bpf_probe_read_kernel(&file, sizeof(file), &fd_array[fd]);
-	
-// 	*inode_out = BPF_CORE_READ(file, f_inode, i_ino);
-
-// 	// obtain path
-// 	f_path = BPF_CORE_READ(file, f_path);
-
-// 	// resolve path string
-// 	bpf_d_path(&f_path, path_out, path_len);
-
-// 	return 0;
-// }
 
 static __always_inline int handle_sys_exit_common(u32 type, long ret)
 {

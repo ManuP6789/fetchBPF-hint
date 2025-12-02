@@ -7,7 +7,7 @@ set -eux  # exit on errors and print each command
 sudo apt update -y
 
 # Install dependencies
-sudo apt install -y clang libelf1 libelf-dev zlib1g-dev libssl-dev liburing-dev
+sudo apt install -y clang libelf1 libelf-dev zlib1g-dev libssl-dev liburing-dev valgrind
 
 # Install optional packages (uncomment if needed)
 sudo apt install -y binutils-dev libcap-dev llvm gcc make build-essential

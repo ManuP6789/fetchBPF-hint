@@ -15,7 +15,7 @@ int main() {
 
     time_t start = time(NULL);
 
-    while (time(NULL) - start < 30) {   // run for ~30 seconds
+    while (time(NULL) - start < 5) {   // run for ~30 seconds
         printf("\n--- iteration ---\n");
 
         // ---- mmap ----

@@ -19,6 +19,7 @@ int prefetch_set_add(prefetch_set_t *set, uint64_t page) {
 
 int prefetch_set_contains(prefetch_set_t *set, uint64_t page) {
     if (!set) return 0;
+    printf("inside prefetch contains\n");
     khiter_t k = kh_get(prefetch, set, page);
     return (k != kh_end(set));
 }

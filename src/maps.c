@@ -7,8 +7,9 @@
 #include <string.h>
 
 struct maps_cache {
-    map_region_t *regions;
     size_t count;
+    pid_t pid;
+    map_region_t *regions;
 };
 
 int cmp_regions(const void *a, const void *b) {
@@ -113,11 +114,44 @@ maps_cache_t* maps_load_from_pid(pid_t pid) {
     qsort(regions, count, sizeof(map_region_t), cmp_regions);
     cache->regions = regions;
     cache->count = count;
+    cache->pid = pid;
 
     return cache;
 }
 
-int maps_reload(maps_cache_t *cache, pid_t pid) {
+int maps_reload(maps_cache_t *cache) {
+    char path[64];
+    char line[512];
+    sprintf(path, "/proc/%d/maps", cache->pid);
+
+    map_region_t *new_regions = NULL;
+    size_t new_count = 0;
+
+    int fd = open(path, O_RDONLY);
+
+    if (fd < 0) {
+        perror("open /proc/<pid>/maps failed, returning old cache");
+        return -1;   // old cache
+    }
+
+    FILE *fp = fdopen(fd, "r");
+    if (!fp) {
+        perror("fdopen failed");
+        close(fd);
+        return -1;
+    }
+
+    while (fgets(line, sizeof(line), fp)) {
+        new_regions = realloc(new_regions, (new_count+1) * sizeof(map_region_t));
+        new_regions[new_count++] = parse_maps_line(line);
+    }
+
+    qsort(new_regions, new_count, sizeof(map_region_t), cmp_regions);
+
+    // free old regions memory
+    free(cache->regions);
+    cache->regions = new_regions;
+    cache->count = new_count;
     return 0;
 }
 

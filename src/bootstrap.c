@@ -20,18 +20,14 @@
 #include "maps.h"
 
 #define QD	64
-#define PAGEMAP_ENTRY 8
-#define PAGE_PRESENT(v)   ((v >> 63) & 1)
-#define PAGE_SWAPPED(v)   ((v >> 62) & 1)
-#define PFN(v)            (v & ((1ULL << 55) - 1))
-const int __endian_bit = 1;
-#define is_bigendian() ( (*(char*)&__endian_bit) == 0 )
 static int infd, outfd;
 static khash_t(prefetch) *prefetching = NULL;
 static const policy_t *policy = NULL;
 static policy_ctx_t *policy_ctx = NULL;
+struct maps_cache_t *maps_c = NULL;
 struct io_uring ring;
 long PAGE_SIZE = 0; 
+unsigned long major_fault_counter = 0;
 
 __attribute__((constructor))
 static void init_page_size(void) {
@@ -179,129 +175,68 @@ static int setup_context(unsigned entries, struct io_uring *ring)
 	return 0;
 }
 
-static void queue_prepped(struct io_uring *ring, struct io_data *data)
-{
-	struct io_uring_sqe *sqe;
-
-	sqe = io_uring_get_sqe(ring);
-	assert(sqe);
-
-	if (data->read)
-		(sqe, infd, &data->iov, 1, data->offset);
-	else
-		io_uring_prep_writev(sqe, outfd, &data->iov, 1, data->offset);
-
-	io_uring_sqe_set_data(sqe, data);
-}
-
-static int queue_read(struct io_uring *ring, off_t size, off_t offset){
-	struct io_uring_sqe *sqe;
-	struct io_data *data;
-
-	data = malloc(size + sizeof(*data));
-	if (!data)
+static int submit_prefetch(struct io_uring *ring, uint64_t addr) {
+    struct io_data *data;
+    struct io_uring_sqe *sqe;
+    
+    data = malloc(PAGE_SIZE + sizeof(*data));
+    if (!data) 
 		return 1;
-
-	sqe = io_uring_get_sqe(ring);
-	if (!sqe) {
-		free(data);
-		return 1;
-	}
-
-	data->read = 1;
-	data->offset = data->first_offset = offset;
-
-	data->iov.iov_base = data + 1;
-	data->iov.iov_len = size;
-	data->first_len = size;
-
-	io_uring_prep_readv(sqe, infd, &data->iov, 1, offset);
-	io_uring_sqe_set_data(sqe, data);
-	return 0;
-}
-
-static void queue_write(struct io_uring *ring, struct io_data *data) {
-	data->read = 0;
-	data->offset = data->first_offset;
-
-	data->iov.iov_base = data + 1;
-	data->iov.iov_len = data->first_len;
-
-	queue_prepped(ring, data);
-	io_uring_submit(ring);
-}
-
-unsigned long get_physical_address(unsigned long pid, unsigned long vaddr) {
-	printf("I am inside get physical...");
-	char path[64];
-	sprintf(path, "/proc/%ld/pagemap", pid);
-	int fd = open(path, O_RDONLY);
-	if(!fd){
-      printf("Error! Cannot open pagemap %s\n", path);
-      return -1;
-   	}
-
-	off_t off = (vaddr / PAGE_SIZE) * PAGEMAP_ENTRY;
-
-    printf("Vaddr: 0x%lx, Page_size: %ld, Entry_size: %d\n", vaddr, PAGE_SIZE, PAGEMAP_ENTRY);
-	printf("Reading %s at 0x%llx\n", path, (unsigned long long) off);
-
-	if(lseek(fd, off, SEEK_SET) == -1){
-      perror("Failed to do fseek!");
-	  close(fd);
-      return -1;
-    }
-	
-	uint64_t entry = 0;
-	ssize_t n = read(fd, &entry, PAGEMAP_ENTRY);
-    close(fd);
-
-	if (n != PAGEMAP_ENTRY) {
-        fprintf(stderr, "Short read from pagemap\n");
-        return 0;
-    }
-
-	printf("Pagemap entry = 0x%016llx\n", (unsigned long long)entry);
-
-	if (!PAGE_PRESENT(entry)) {
-        printf("Page not present\n");
-        return 0;
+    
+    sqe = io_uring_get_sqe(ring);
+    if (!sqe) {
+        free(data);
+        return 1;
     }
     
-	uint64_t pfn = PFN(entry);
-    printf("PFN = 0x%llx\n", (unsigned long long)pfn);
-
-	printf("PFN = 0x%llx\n", (unsigned long long)pfn);
-
-    uint64_t phys = (pfn * getpagesize()) + (vaddr % getpagesize());
-    printf("Physical address = 0x%llx\n", (unsigned long long)phys);
-
-    return phys;
+    data->read = 1;
+    data->offset = addr;
+    data->iov.iov_base = data + 1;
+    data->iov.iov_len = PAGE_SIZE;
+    
+    io_uring_prep_readv(sqe, infd, &data->iov, 1, addr);
+    io_uring_sqe_set_data(sqe, data);
+    
+    return 0;
 }
 
 static int handle_fault(const struct event *e) {
-	printf("%-5s %-7d address=0x%lx ip=0x%lx\n",
+	printf("%-5s %-7d address=0x%lx ip=0x%lx hello wtf\n",
 			"FAULT", e->pid, e->address, e->ip);
+	printf("this is major fault from bpf %lu and this is from major_fault_counter %lu, this is min_fault %lu\n",
+											e->maj, major_fault_counter, e->min);
+	if (e->maj == major_fault_counter) {
+		return 1;
+	}
+	major_fault_counter = e->maj;
 
 	uint64_t vaddr = e->address;
 	uint64_t page = vaddr >> 12;
+	printf("this is vaddr, %lx and this is page, %lx\n", vaddr, page);
 	
 	// Check if the page is already in the prefetch set
 	if (prefetch_set_contains(prefetching, page))
 		return 1;
 
+	printf("Made it past prefetch contain\n");
 	// Call prefetcher to get page addresses to prefetch with io_uring
 	uint64_t targets[32];   // max prefetch count
 	size_t n = policy->compute_prefetch(policy_ctx, vaddr, targets, 32);
 
+	printf("Made it here lol\n");
 	for (size_t i = 0; i < n; i++) {
 		uint64_t target_page = targets[i] >> 12;
 		if (prefetch_set_contains(prefetching, target_page))
 			continue;
 		
-		// submit_prefetch(&ring, targets[i]);  // you implement this
-		prefetch_set_add(prefetching, target_page);            // track outstanding reads
+		if (submit_prefetch(&ring, targets[i])) {
+			fprintf(stderr, "Failed to submit prefetch\n");
+			continue;
+		}
+		prefetch_set_add(prefetching, target_page);  // track outstanding reads
 	}
+
+	io_uring_submit(&ring);
 
 	
 	
@@ -313,18 +248,24 @@ static int handle_fault(const struct event *e) {
 static int handle_mmap(const struct event *e) {
 	printf("%-5s %-7d address=0x%lx ip=0x%lx\n",
 			"MMAP", e->pid, e->address, e->ip);
+	if (maps_reload(maps_c))
+		fprintf(stderr, "Failed to reload maps cache\n");
 	return 0;
 }
 
 static int handle_mremap(const struct event *e) {
 	printf("%-5s %-7d address=0x%lx ip=0x%lx\n",
 			"MREMAP", e->pid, e->address, e->ip);
+	if (maps_reload(maps_c))
+		fprintf(stderr, "Failed to reload maps cache\n");
 	return 0;
 }
 
 static int handle_munmap(const struct event *e) {
 	printf("%-5s %-7d address=0x%lx ip=0x%lx\n",
 			"MUNMAP", e->pid, e->address, e->ip);
+	if (maps_reload(maps_c))
+		fprintf(stderr, "Failed to reload maps cache\n");
 	return 0;
 }
 
@@ -346,7 +287,6 @@ int main(int argc, char **argv) {
 	struct ring_buffer *rb = NULL;
 	struct bootstrap_bpf *skel;
 	struct io_uring ring;
-	struct maps_cache_t *maps_c;
 	policy = policy_sequential();       // or stride(), none(), etc.
     policy_ctx = policy->init(); 
 	prefetch_set_t *prefetching = prefetch_set_create();
