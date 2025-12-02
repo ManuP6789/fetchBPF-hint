@@ -41,8 +41,10 @@ static struct env {
 
 struct io_data {
 	int read;
-	off_t first_offset, offset;
-	size_t first_len;
+	int fd;
+	off_t offset;
+	size_t len;
+	unsigned long page;
 	struct iovec iov;
 };
 
@@ -175,26 +177,108 @@ static int setup_context(unsigned entries, struct io_uring *ring)
 	return 0;
 }
 
-static int submit_prefetch(struct io_uring *ring, uint64_t addr) {
-    struct io_data *data;
-    struct io_uring_sqe *sqe;
-    
+// Call periodically or after batch of submits to collect completions
+static void reap_cqes() {
+    struct io_uring_cqe *cqe;
+    while (io_uring_peek_cqe(&ring, &cqe) == 0) {
+        struct io_data *d = io_uring_cqe_get_data(cqe);
+        int res = cqe->res; // result: bytes read or negative errno
+        uint64_t page_idx = 0;
+        if (d) {
+			prefetch_set_remove(prefetching, d->page);
+        }
+
+        if (res < 0) {
+            // read failed. log errno = -res
+            fprintf(stderr, "prefetch read failed: %s\n", strerror(-res));
+        } 
+
+        if (d) {
+            free(d);
+        }
+
+        io_uring_cqe_seen(&ring, cqe);
+    }
+}
+
+
+static int open_fd_for_region(const map_region_t *reg) {
+    if (!reg->file_backed || reg->pathname[0] == '\0') return -1;
+    int fd = open(reg->pathname, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        // Non-fatal: file may have been unlinked by the process
+        return -1;
+    }
+    return fd;
+}
+
+static int submit_prefetch(uint64_t vaddr) {
+	printf("inside submit prefetch\n");
+	struct io_uring_sqe *sqe = NULL;
+    struct io_data *data = NULL;
+    map_region_t *region;
+	off_t file_offset;
+	off_t page_aligned_off;
+	int fd = -1;
+	uint64_t page_idx = vaddr >> 12;
+
+	// find region for vaddr
+	region = maps_lookup(maps_c, vaddr);
+	if (!region->file_backed) {
+		// nothing to read, anonymous map
+		return -1;
+	}
+
+	// compute file offset: (vaddr - region.start) + region.offset
+	if (vaddr < region->start || vaddr >= region->end) {
+		// out of region
+		return -1;
+	}
+	file_offset = (off_t)((vaddr - region->start) + region->offset);
+
+	// align offset to page boundary
+	page_aligned_off = file_offset & ~(off_t)(PAGE_SIZE - 1);
+
+	// check if fd already in map_region, otherwise open file
+	if (region->fd > -1) {
+		fd = region->fd;
+	} else {
+		fd = open_fd_for_region(region);
+		if (fd < 0)
+			return -1;
+		region->fd = fd;
+	}
+
     data = malloc(PAGE_SIZE + sizeof(*data));
     if (!data) 
-		return 1;
-    
-    sqe = io_uring_get_sqe(ring);
-    if (!sqe) {
+		return -1;
+
+	memset(data, 0, sizeof(*data));
+	data->fd = fd;
+	data->read = 1;
+    data->offset = page_aligned_off;
+	data->len = PAGE_SIZE;
+	data->page = page_idx;
+	data->iov.iov_base = (void*)(data + 1); // buffer directly after struct
+	data->iov.iov_len = PAGE_SIZE;
+
+	// check in-flight set and add BEFORE submitting to avoid races
+    if (prefetch_set_contains(prefetching, page_idx)) {
+        // already requested
         free(data);
-        return 1;
+        return -1;
+    }
+    prefetch_set_add(prefetching, page_idx);
+    
+    sqe = io_uring_get_sqe(&ring);
+    if (!sqe) {
+		prefetch_set_remove(prefetching, page_idx);
+        free(data);
+        return -1;
     }
     
-    data->read = 1;
-    data->offset = addr;
-    data->iov.iov_base = data + 1;
-    data->iov.iov_len = PAGE_SIZE;
     
-    io_uring_prep_readv(sqe, infd, &data->iov, 1, addr);
+    io_uring_prep_readv(sqe, fd, &data->iov, 1, data->offset);
     io_uring_sqe_set_data(sqe, data);
     
     return 0;
@@ -225,23 +309,12 @@ static int handle_fault(const struct event *e) {
 
 	printf("Made it here lol\n");
 	for (size_t i = 0; i < n; i++) {
-		uint64_t target_page = targets[i] >> 12;
-		if (prefetch_set_contains(prefetching, target_page))
-			continue;
-		
-		if (submit_prefetch(&ring, targets[i])) {
-			fprintf(stderr, "Failed to submit prefetch\n");
-			continue;
-		}
-		prefetch_set_add(prefetching, target_page);  // track outstanding reads
+		if (submit_prefetch(targets[i]))
+			fprintf(stderr, "Failed to submit prefetch at addr %lx\n", targets[i]);
 	}
-
+	reap_cqes();
 	io_uring_submit(&ring);
 
-	
-	
-	// submit prefetch
-	// Read prefetches and remove from set  
 	return 0;
 } 
 

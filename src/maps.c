@@ -40,6 +40,7 @@ static map_region_t parse_maps_line(const char *line) {
     r.end = end;
     r.offset = offset;
     r.inode = inode;
+    r.fd = -1;
     
     // Extract pathname: it's the part after the 6 fields
     const char *p = line;
@@ -155,7 +156,7 @@ int maps_reload(maps_cache_t *cache) {
     return 0;
 }
 
-const map_region_t *maps_lookup(maps_cache_t *cache, uint64_t addr) {
+map_region_t *maps_lookup(maps_cache_t *cache, uint64_t addr) {
     map_region_t key = {.start = addr};
     map_region_t *r = bsearch(
         &key,
@@ -170,7 +171,9 @@ const map_region_t *maps_lookup(maps_cache_t *cache, uint64_t addr) {
 
 void maps_free(maps_cache_t *cache) {
     if (!cache) return;
-
+    for (int i = 0; i < cache->count; i++) {
+        
+    }
     free(cache->regions);  
     free(cache);            
 }
