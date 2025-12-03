@@ -6,6 +6,9 @@ package.json
 package.yaml
 ecli
 bootstrap
+*.bin
+*.log
 
 # Snyk Security Extension - AI Rules (auto-generated)
 .github/instructions/snyk_rules.instructions.md
+test_major_faults

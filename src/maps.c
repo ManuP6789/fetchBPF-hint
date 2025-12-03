@@ -109,7 +109,7 @@ maps_cache_t* maps_load_from_pid(pid_t pid) {
     while (fgets(line, sizeof(line), fp)) {
         regions = realloc(regions, (count+1) * sizeof(map_region_t));
         regions[count++] = parse_maps_line(line);
-        printf("Read line: %s", line);
+        // printf("Read line: %s", line);
     }
     // fill map_region_t entries
     qsort(regions, count, sizeof(map_region_t), cmp_regions);
@@ -156,14 +156,22 @@ int maps_reload(maps_cache_t *cache) {
     return 0;
 }
 
+static int cmp_addr_to_region(const void *key, const void *elem) {
+    uint64_t addr = *(const uint64_t *)key;
+    const map_region_t *r = elem;
+
+    if (addr < r->start) return -1;
+    if (addr >= r->end)  return  1;
+    return 0;  // inside region → match
+}
+
 map_region_t *maps_lookup(maps_cache_t *cache, uint64_t addr) {
-    map_region_t key = {.start = addr};
     map_region_t *r = bsearch(
-        &key,
-        cache,
+        &addr,
+        cache->regions,
         cache->count,
         sizeof(map_region_t),
-        cmp_regions
+        cmp_addr_to_region
     );
     return r;
 }

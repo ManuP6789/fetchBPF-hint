@@ -18,8 +18,9 @@
 #include "bootstrap.skel.h"
 #include "policy.h"
 #include "maps.h"
+#include <sys/time.h>
 
-#define QD	64
+#define QD	256
 static int infd, outfd;
 static khash_t(prefetch) *prefetching = NULL;
 static const policy_t *policy = NULL;
@@ -27,7 +28,18 @@ static policy_ctx_t *policy_ctx = NULL;
 struct maps_cache_t *maps_c = NULL;
 struct io_uring ring;
 long PAGE_SIZE = 0; 
+const int SUBMIT_BATCH = 32; 
+uint64_t last_submit_tsc;
+int pending_submits = 0;  
+const uint64_t SUBMIT_EVERY_NS = 1000000;  // 0.5 ms
 unsigned long major_fault_counter = 0;
+
+// Instrumentation metrics 
+unsigned long total_prefetches = 0;
+unsigned long used_prefetches = 0;
+unsigned long avoided_faults = 0;
+unsigned long total_major_faults = 0;
+unsigned long total_pages_to_readahead = 0;
 
 __attribute__((constructor))
 static void init_page_size(void) {
@@ -63,6 +75,13 @@ static const struct argp_option opts[] = {
 	{ "duration", 'd', "DURATION-MS", 0, "Minimum process duration (ms) to report" },
 	{},
 };
+
+static inline __u64 get_time_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (__u64)ts.tv_sec * 1000000000ull + ts.tv_nsec;
+}
 
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
@@ -164,11 +183,11 @@ int wait_for_pid_in_cgroup(const char *cgpath)
 /* ===============================
  * io_uring helpers
  * =============================== */
-static int setup_context(unsigned entries, struct io_uring *ring)
+static int setup_context()
 {
 	int ret;
 
-	ret = io_uring_queue_init(entries, ring, 0);
+	ret = io_uring_queue_init(QD, &ring, 0);
 	if (ret < 0) {
 		fprintf(stderr, "queue_init: %s\n", strerror(-ret));
 		return -1;
@@ -213,7 +232,6 @@ static int open_fd_for_region(const map_region_t *reg) {
 }
 
 static int submit_prefetch(uint64_t vaddr) {
-	printf("inside submit prefetch\n");
 	struct io_uring_sqe *sqe = NULL;
     struct io_data *data = NULL;
     map_region_t *region;
@@ -224,11 +242,12 @@ static int submit_prefetch(uint64_t vaddr) {
 
 	// find region for vaddr
 	region = maps_lookup(maps_c, vaddr);
+
 	if (!region->file_backed) {
 		// nothing to read, anonymous map
 		return -1;
 	}
-
+    
 	// compute file offset: (vaddr - region.start) + region.offset
 	if (vaddr < region->start || vaddr >= region->end) {
 		// out of region
@@ -277,11 +296,26 @@ static int submit_prefetch(uint64_t vaddr) {
         return -1;
     }
     
-    
     io_uring_prep_readv(sqe, fd, &data->iov, 1, data->offset);
+
     io_uring_sqe_set_data(sqe, data);
+	pending_submits++;
+
+	total_prefetches++;
     
     return 0;
+}
+
+static inline void maybe_submit() {
+    uint64_t now = get_time_ns();   // clock_gettime(CLOCK_MONOTONIC, ...)
+    if (pending_submits >= SUBMIT_BATCH ||
+        now - last_submit_tsc >= SUBMIT_EVERY_NS) {
+
+		printf("number of submits and time: %i, %lu\n", pending_submits, now - last_submit_tsc);
+        io_uring_submit(&ring);
+        last_submit_tsc = now;
+        pending_submits = 0;
+    }
 }
 
 static int handle_fault(const struct event *e) {
@@ -292,28 +326,27 @@ static int handle_fault(const struct event *e) {
 	if (e->maj == major_fault_counter) {
 		return 1;
 	}
+	total_major_faults++;
 	major_fault_counter = e->maj;
 
 	uint64_t vaddr = e->address;
 	uint64_t page = vaddr >> 12;
-	printf("this is vaddr, %lx and this is page, %lx\n", vaddr, page);
 	
 	// Check if the page is already in the prefetch set
-	if (prefetch_set_contains(prefetching, page))
+	if (prefetch_set_contains(prefetching, page)) {
+		avoided_faults++;
 		return 1;
+	}
+	policy->on_page_fault(policy_ctx, e->pid, vaddr, 0);
 
-	printf("Made it past prefetch contain\n");
 	// Call prefetcher to get page addresses to prefetch with io_uring
-	uint64_t targets[32];   // max prefetch count
-	size_t n = policy->compute_prefetch(policy_ctx, vaddr, targets, 32);
-
-	printf("Made it here lol\n");
+	uint64_t targets[64];   // max prefetch count
+	size_t n = policy->compute_prefetch(policy_ctx, vaddr, targets, 64);
+	total_pages_to_readahead += n;
 	for (size_t i = 0; i < n; i++) {
 		if (submit_prefetch(targets[i]))
 			fprintf(stderr, "Failed to submit prefetch at addr %lx\n", targets[i]);
 	}
-	reap_cqes();
-	io_uring_submit(&ring);
 
 	return 0;
 } 
@@ -360,7 +393,8 @@ int main(int argc, char **argv) {
 	struct ring_buffer *rb = NULL;
 	struct bootstrap_bpf *skel;
 	struct io_uring ring;
-	policy = policy_sequential();       // or stride(), none(), etc.
+	policy = policy_sequential();   
+	// policy = policy_stride();
     policy_ctx = policy->init(); 
 	prefetch_set_t *prefetching = prefetch_set_create();
 	int err;
@@ -384,7 +418,7 @@ int main(int argc, char **argv) {
     }
 
 	/* Set up io_uring*/
-	if (setup_context(QD, &ring))
+	if (setup_context())
 		return 1;
 
 	/* Parse command line arguments */
@@ -426,7 +460,7 @@ int main(int argc, char **argv) {
     err = bpf_map_update_elem(map_fd, &key, &cg_id, BPF_ANY);
     if (err < 0) {
         perror("update cgroup map");
-        return 1;
+        return 1;  
     }
 
 	/* Attach tracepoints */
@@ -458,7 +492,22 @@ int main(int argc, char **argv) {
 			printf("Error polling perf buffer: %d\n", err);
 			break;
 		}
+
+		maybe_submit();
+
+		reap_cqes();
 	}
+	printf("=== Prefetch Stats ===\n");
+	printf("Total prefetches: %lu\n", total_prefetches);
+	printf("Used prefetches: %lu\n", used_prefetches);
+	printf("Prefetch accuracy: %.2f %%\n",
+		100.0 * used_prefetches / total_prefetches);
+
+	printf("Major faults: %lu\n", total_major_faults);
+	printf("Avoided faults: %lu\n", avoided_faults);
+	printf("Total readahead pages: %lu\n", total_pages_to_readahead);
+	printf("Prefetch coverage: %.2f %%\n",
+		100.0 * avoided_faults / total_major_faults);
 
 cleanup:
 	/* Clean up */
