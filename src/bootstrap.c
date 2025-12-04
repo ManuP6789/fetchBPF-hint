@@ -21,7 +21,6 @@
 #include <sys/time.h>
 
 #define QD	256
-static int infd, outfd;
 static khash_t(prefetch) *prefetching = NULL;
 static const policy_t *policy = NULL;
 static policy_ctx_t *policy_ctx = NULL;
@@ -33,6 +32,8 @@ uint64_t last_submit_tsc;
 int pending_submits = 0;  
 const uint64_t SUBMIT_EVERY_NS = 1000000;  // 0.5 ms
 unsigned long major_fault_counter = 0;
+static unsigned long long total_fault_latency_ns = 0;
+static unsigned long fault_latency_samples = 0;
 
 // Instrumentation metrics 
 unsigned long total_prefetches = 0;
@@ -198,6 +199,7 @@ static int setup_context()
 
 // Call periodically or after batch of submits to collect completions
 static void reap_cqes() {
+	// fprintf(stderr, "hey crashing here in reap lol\n");
     struct io_uring_cqe *cqe;
     while (io_uring_peek_cqe(&ring, &cqe) == 0) {
         struct io_data *d = io_uring_cqe_get_data(cqe);
@@ -218,6 +220,7 @@ static void reap_cqes() {
 
         io_uring_cqe_seen(&ring, cqe);
     }
+	// fprintf(stderr, "lol nvm not in reap\n");
 }
 
 
@@ -313,16 +316,19 @@ static inline void maybe_submit() {
 
 		printf("number of submits and time: %i, %lu\n", pending_submits, now - last_submit_tsc);
         io_uring_submit(&ring);
+		// fprintf(stderr, "After io_uring submit\n");
         last_submit_tsc = now;
         pending_submits = 0;
     }
 }
 
 static int handle_fault(const struct event *e) {
-	printf("%-5s %-7d address=0x%lx ip=0x%lx hello wtf\n",
-			"FAULT", e->pid, e->address, e->ip);
-	printf("this is major fault from bpf %lu and this is from major_fault_counter %lu, this is min_fault %lu\n",
-											e->maj, major_fault_counter, e->min);
+	uint64_t t0 = get_time_ns();
+	// fprintf(stderr, "inside handle fault lol\n");
+	// printf("%-5s %-7d address=0x%lx ip=0x%lx hello wtf\n",
+	// 		"FAULT", e->pid, e->address, e->ip);
+	// printf("this is major fault from bpf %lu and this is from major_fault_counter %lu, this is min_fault %lu\n",
+	// 										e->maj, major_fault_counter, e->min);
 	if (e->maj == major_fault_counter) {
 		return 1;
 	}
@@ -347,6 +353,12 @@ static int handle_fault(const struct event *e) {
 		if (submit_prefetch(targets[i]))
 			fprintf(stderr, "Failed to submit prefetch at addr %lx\n", targets[i]);
 	}
+
+	uint64_t t1 = get_time_ns();   // END TIMING
+
+    // accumulate
+    total_fault_latency_ns += (t1 - t0);
+	fault_latency_samples++;
 
 	return 0;
 } 
@@ -377,6 +389,7 @@ static int handle_munmap(const struct event *e) {
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
+	// fprintf(stderr, "yo crashing here in handle_event\n");
 	const struct event *e = data;
 
 	switch (e->type) {
@@ -385,6 +398,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 		case EVENT_MREMAP:	  handle_mremap(e); break;
 		case EVENT_MUNMAP:	  handle_munmap(e); break;
 	}
+	// fprintf(stderr, "lol jk not in handle event\n");
 
 	return 0;
 }
@@ -482,14 +496,16 @@ int main(int argc, char **argv) {
 	printf("%-8s %-5s %-16s %-7s %-7s %s\n",
 	       "TIME", "EVENT", "COMM", "PID", "PPID", "FILENAME/EXIT CODE");
 	while (!exiting) {
+		// fprintf(stderr, "crashing here before ringbuffer handling\n");
 		err = ring_buffer__poll(rb, 100 /* timeout, ms */);
+		// fprintf(stderr, "not crash after ringbuffer handling\n");
 		/* Ctrl-C will cause -EINTR */
 		if (err == -EINTR) {
 			err = 0;
 			break;
 		}
 		if (err < 0) {
-			printf("Error polling perf buffer: %d\n", err);
+			fprintf(stderr, "Error polling perf buffer: %d\n", err);
 			break;
 		}
 
@@ -508,6 +524,8 @@ int main(int argc, char **argv) {
 	printf("Total readahead pages: %lu\n", total_pages_to_readahead);
 	printf("Prefetch coverage: %.2f %%\n",
 		100.0 * avoided_faults / total_major_faults);
+	printf("Avg fault→prefetch latency: %.2f µs\n",
+       (double)total_fault_latency_ns / fault_latency_samples / 1000.0);
 
 cleanup:
 	/* Clean up */

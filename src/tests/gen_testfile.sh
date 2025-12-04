@@ -2,7 +2,7 @@
 set -e
 
 FILE="test_data.bin"
-SIZE_MB=512
+SIZE_MB=256
 
 if [ ! -f "$FILE" ]; then
     echo "[+] Trying fallocate for sparse, cold pages..."

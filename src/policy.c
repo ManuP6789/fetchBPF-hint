@@ -17,6 +17,7 @@ typedef struct {
     size_t window; 
 } seq_ctx_t;
 
+
 static policy_ctx_t *seq_init(void) {
     seq_ctx_t *ctx = calloc(1, sizeof(seq_ctx_t));
     ctx->last_fault_vaddr = UINT64_MAX;
@@ -37,7 +38,7 @@ static void seq_on_fault(policy_ctx_t *pctx, pid_t pid, uint64_t vaddr,
 
     if (ctx->last_fault_vaddr == UINT64_MAX) {
         ctx->window = 1;
-        ctx->next_expected_vaddr = aligned_vaddr + (PAGE_SIZE * 32);
+        ctx->next_expected_vaddr = aligned_vaddr + (PAGE_SIZE);
         printf("[SEQ] First fault: vaddr=0x%lx → window=1\n", aligned_vaddr);
     } else if (aligned_vaddr == ctx->next_expected_vaddr) {
         uint64_t last_page = ctx->last_fault_vaddr >> 12;
@@ -45,7 +46,7 @@ static void seq_on_fault(policy_ctx_t *pctx, pid_t pid, uint64_t vaddr,
         ctx->window = MIN(ctx->window * 2, MAX_WINDOW);
         printf("[SEQ] SEQUENTIAL fault: vaddr=0x%lx (page=%lu) last=0x%lx (page=%lu) actual_diff=%ld pages → window=%zu\n", 
                aligned_vaddr, fault_page, ctx->last_fault_vaddr, last_page, actual_diff, ctx->window);
-        ctx->next_expected_vaddr = aligned_vaddr + (ctx->window * (PAGE_SIZE * 32));
+        ctx->next_expected_vaddr = aligned_vaddr + (ctx->window * (PAGE_SIZE));
     } else {
         ctx->window = 1;
         uint64_t expected_page = ctx->next_expected_vaddr >> 12;
@@ -54,11 +55,39 @@ static void seq_on_fault(policy_ctx_t *pctx, pid_t pid, uint64_t vaddr,
         int64_t actual_diff = (int64_t)fault_page - (int64_t)last_page;
         printf("[SEQ] NON-SEQUENTIAL fault: vaddr=0x%lx (page=%lu) last=0x%lx (page=%lu) expected_diff=%ld actual_diff=%ld → reset window to 1\n",
                aligned_vaddr, fault_page, ctx->last_fault_vaddr, last_page, expected_diff, actual_diff);
-        ctx->next_expected_vaddr = aligned_vaddr + (PAGE_SIZE * 32);
+        ctx->next_expected_vaddr = aligned_vaddr + (PAGE_SIZE);
     }
 
     ctx->last_fault_vaddr = aligned_vaddr;
+
+On page fault (vaddr):
+    aligned_vaddr = align_to_page(vaddr)
+
+    if (last_fault_vaddr == NULL) {
+        // First fault
+        window = 1;
+        next_expected_vaddr = aligned_vaddr + PAGE_SIZE;
+
+    } else if (aligned_vaddr == next_expected_vaddr) {
+        // Sequential access detected
+        window = min(window * 2, MAX_WINDOW);
+        next_expected_vaddr = aligned_vaddr + window * PAGE_SIZE;
+
+    } else {
+        // Non-sequential access, then reset
+        window = 1;
+        next_expected_vaddr = aligned_vaddr + PAGE_SIZE;
+    }
+
+    last_fault_vaddr = aligned_vaddr;
+
+Compute prefetch targets (vaddr):
+    aligned_vaddr = align_to_page(vaddr)
+    for i = 1 to window:
+        prefetch_list[i-1] = aligned_vaddr + i * PAGE_SIZE
+    return prefetch_list
 }
+
 
 static size_t seq_compute_prefetch(policy_ctx_t *pctx, uint64_t fault_vaddr, 
                                         uint64_t *out, size_t max) 
@@ -68,13 +97,13 @@ static size_t seq_compute_prefetch(policy_ctx_t *pctx, uint64_t fault_vaddr,
 
     uint64_t aligned_vaddr = fault_vaddr & ~(PAGE_SIZE - 1);
     uint64_t fault_page = aligned_vaddr >> 12;
-    // printf("DEBUG compute: raw_vaddr=0x%lx, PAGE_SIZE=%lu, after_shift=%lu\n", 
-    //     fault_vaddr, PAGE_SIZE, fault_page);
+    printf("DEBUG compute: raw_vaddr=0x%lx, PAGE_SIZE=%lu, after_shift=%lu\n", 
+        fault_vaddr, PAGE_SIZE, fault_page);
 
 
     size_t count = 0;
     for (size_t i = 1; i <= ctx->window && count < max; i++) {
-        out[count++] = aligned_vaddr + (i * PAGE_SIZE * 32);
+        out[count++] = aligned_vaddr + (i * PAGE_SIZE);
     }
     
     // printf("[SEQ] compute_prefetch: window=%zu, prefetch_count=%zu\n", 

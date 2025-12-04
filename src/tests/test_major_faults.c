@@ -17,7 +17,7 @@ double get_time_ms() {
 int main() {
     printf("=== major fault test ===\n");
     const char *filename = "test_data.bin";
-    int fd = open(filename, O_RDONLY);
+    int fd = open(filename, O_RDONLY | O_DIRECT);
     if (fd < 0) {
         perror("open");
         return 1;
@@ -45,17 +45,17 @@ int main() {
     // posix_fadvise(fd, 0, filesize, POSIX_FADV_DONTNEED);
     posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM);
 
-
     // mmap the file
     char *p = mmap(NULL, filesize, PROT_READ, MAP_PRIVATE, fd, 0);
     if (p == MAP_FAILED) {
         perror("mmap");
         return 1;
     }
+    madvise(p, filesize, MADV_NOHUGEPAGE);
 
     // Touch each page ONCE → triggers MAJOR FAULTS
     double iter_start = get_time_ms();
-    for (size_t i = 0; i < filesize; i += pagesize * 2) {
+    for (size_t i = 0; i < filesize; i += pagesize) {
         volatile char x = p[i];
         // if (i % (32 * pagesize) == 0)  // print every 32 pages
         //     printf("Accessing offset: %zu (page %lu)\n", i, i / pagesize);

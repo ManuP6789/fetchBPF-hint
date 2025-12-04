@@ -37,7 +37,9 @@ if [[ "$MODE" == "anon" ]]; then
 elif [[ "$MODE" == "major" ]]; then
     # Ensure file exists for major fault test
     echo "[+] Ensuring test_data.bin exists"
+    # echo "1M" | sudo tee "$CGROUP/memory.max" >/dev/null
     ./gen_testfile.sh
+    sudo sh -c "echo 3 > /proc/sys/vm/drop_caches"
     SRC="test_major_faults.c"
     BIN="./test_major_faults"
 else
@@ -59,5 +61,7 @@ echo $PID | sudo tee "$CGROUP/cgroup.procs" >/dev/null
 
 echo "[+] Waiting for program to finish..."
 wait $PID
+
+# echo "max" | sudo tee "$CGROUP/memory.max" >/dev/null
 
 echo "[+] Done."
