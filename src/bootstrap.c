@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <sys/resource.h>
 #include "liburing.h"
@@ -28,7 +29,7 @@ struct maps_cache_t *maps_c = NULL;
 struct io_uring ring;
 long PAGE_SIZE = 0; 
 const int SUBMIT_BATCH = 32; 
-uint64_t last_submit_tsc;
+uint64_t last_submit_time_ns;
 int pending_submits = 0;  
 const uint64_t SUBMIT_EVERY_NS = 1000000;  // 0.5 ms
 unsigned long major_fault_counter = 0;
@@ -312,12 +313,12 @@ static int submit_prefetch(uint64_t vaddr) {
 static inline void maybe_submit() {
     uint64_t now = get_time_ns();   // clock_gettime(CLOCK_MONOTONIC, ...)
     if (pending_submits >= SUBMIT_BATCH ||
-        now - last_submit_tsc >= SUBMIT_EVERY_NS) {
+        now - last_submit_time_ns >= SUBMIT_EVERY_NS) {
 
-		printf("number of submits and time: %i, %lu\n", pending_submits, now - last_submit_tsc);
+		printf("number of submits and time: %i, %lu\n", pending_submits, now - last_submit_time_ns);
         io_uring_submit(&ring);
-		// fprintf(stderr, "After io_uring submit\n");
-        last_submit_tsc = now;
+		fprintf(stderr, "After io_uring submit\n");
+        last_submit_time_ns = now;
         pending_submits = 0;
     }
 }
@@ -327,8 +328,8 @@ static int handle_fault(const struct event *e) {
 	// fprintf(stderr, "inside handle fault lol\n");
 	// printf("%-5s %-7d address=0x%lx ip=0x%lx hello wtf\n",
 	// 		"FAULT", e->pid, e->address, e->ip);
-	// printf("this is major fault from bpf %lu and this is from major_fault_counter %lu, this is min_fault %lu\n",
-	// 										e->maj, major_fault_counter, e->min);
+	printf("this is major fault from bpf %lu and this is from major_fault_counter %lu, this is min_fault %lu\n",
+											e->maj, major_fault_counter, e->min);
 	if (e->maj == major_fault_counter) {
 		return 1;
 	}
@@ -406,13 +407,12 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 int main(int argc, char **argv) {
 	struct ring_buffer *rb = NULL;
 	struct bootstrap_bpf *skel;
-	struct io_uring ring;
 	policy = policy_sequential();   
 	// policy = policy_stride();
     policy_ctx = policy->init(); 
 	prefetch_set_t *prefetching = prefetch_set_create();
 	int err;
-
+	last_submit_time_ns = get_time_ns();
 	uint64_t cg_id = get_cgroup_id("/sys/fs/cgroup/prefetch");
     printf("Cgroup ID: %lu\n", cg_id);
 
@@ -501,8 +501,9 @@ int main(int argc, char **argv) {
 		// fprintf(stderr, "not crash after ringbuffer handling\n");
 		/* Ctrl-C will cause -EINTR */
 		if (err == -EINTR) {
-			err = 0;
-			break;
+			fprintf(stderr, "Error polling perf -EINTR: %d\n", err);
+			// Interrupted by a signal, just continue
+        	continue;
 		}
 		if (err < 0) {
 			fprintf(stderr, "Error polling perf buffer: %d\n", err);

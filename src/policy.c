@@ -46,7 +46,8 @@ static void seq_on_fault(policy_ctx_t *pctx, pid_t pid, uint64_t vaddr,
         ctx->window = MIN(ctx->window * 2, MAX_WINDOW);
         printf("[SEQ] SEQUENTIAL fault: vaddr=0x%lx (page=%lu) last=0x%lx (page=%lu) actual_diff=%ld pages → window=%zu\n", 
                aligned_vaddr, fault_page, ctx->last_fault_vaddr, last_page, actual_diff, ctx->window);
-        ctx->next_expected_vaddr = aligned_vaddr + (ctx->window * (PAGE_SIZE));
+        // ctx->next_expected_vaddr = aligned_vaddr + (ctx->window * (PAGE_SIZE));
+        ctx->next_expected_vaddr = aligned_vaddr + PAGE_SIZE;
     } else {
         ctx->window = 1;
         uint64_t expected_page = ctx->next_expected_vaddr >> 12;
@@ -59,33 +60,6 @@ static void seq_on_fault(policy_ctx_t *pctx, pid_t pid, uint64_t vaddr,
     }
 
     ctx->last_fault_vaddr = aligned_vaddr;
-
-On page fault (vaddr):
-    aligned_vaddr = align_to_page(vaddr)
-
-    if (last_fault_vaddr == NULL) {
-        // First fault
-        window = 1;
-        next_expected_vaddr = aligned_vaddr + PAGE_SIZE;
-
-    } else if (aligned_vaddr == next_expected_vaddr) {
-        // Sequential access detected
-        window = min(window * 2, MAX_WINDOW);
-        next_expected_vaddr = aligned_vaddr + window * PAGE_SIZE;
-
-    } else {
-        // Non-sequential access, then reset
-        window = 1;
-        next_expected_vaddr = aligned_vaddr + PAGE_SIZE;
-    }
-
-    last_fault_vaddr = aligned_vaddr;
-
-Compute prefetch targets (vaddr):
-    aligned_vaddr = align_to_page(vaddr)
-    for i = 1 to window:
-        prefetch_list[i-1] = aligned_vaddr + i * PAGE_SIZE
-    return prefetch_list
 }
 
 

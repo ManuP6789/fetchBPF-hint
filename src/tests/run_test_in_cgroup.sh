@@ -16,6 +16,17 @@ fi
 
 CGROUP="/sys/fs/cgroup/prefetch"
 
+echo "[+] Disabling Transparent Huge Pages (THP)"
+sudo bash -c 'echo never > /sys/kernel/mm/transparent_hugepage/enabled'
+sudo bash -c 'echo never > /sys/kernel/mm/transparent_hugepage/defrag'
+
+echo "[+] Disabling static HugePages"
+sudo bash -c 'echo 0 > /proc/sys/vm/nr_hugepages'
+
+echo "[+] THP status:"
+cat /sys/kernel/mm/transparent_hugepage/enabled
+echo "[+] nr_hugepages: $(cat /proc/sys/vm/nr_hugepages)"
+
 echo "[+] Creating cgroup at $CGROUP"
 sudo mkdir -p "$CGROUP"
 sudo chown $USER:$(id -gn) "$CGROUP"
