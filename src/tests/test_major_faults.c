@@ -17,7 +17,7 @@ double get_time_ms() {
 int main() {
     printf("=== major fault test ===\n");
     const char *filename = "test_data.bin";
-    int fd = open(filename, O_RDONLY | O_DIRECT);
+    int fd = open(filename, O_RDONLY);
     if (fd < 0) {
         perror("open");
         return 1;
@@ -82,7 +82,7 @@ int main() {
     printf("=== test finished ===\n");
     // printf("Total elapsed time: %.2f seconds\n", total_time / 1000.0);
     // printf("Total page access time: %.2f ms\n", total_page_access_time);
-    // printf("Total faults triggered: %lu\n", total_faults);
+    printf("Total faults triggered: %lu\n", total_faults);
     // printf("Average time per fault: %.3f ms\n", 
     //        total_page_access_time / total_faults);
 

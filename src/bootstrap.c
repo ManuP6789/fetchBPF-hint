@@ -28,7 +28,7 @@ static policy_ctx_t *policy_ctx = NULL;
 struct maps_cache_t *maps_c = NULL;
 struct io_uring ring;
 long PAGE_SIZE = 0; 
-const int SUBMIT_BATCH = 32; 
+const int SUBMIT_BATCH = 32;
 uint64_t last_submit_time_ns;
 int pending_submits = 0;  
 const uint64_t SUBMIT_EVERY_NS = 1000000;  // 0.5 ms
@@ -39,6 +39,7 @@ static unsigned long fault_latency_samples = 0;
 // Instrumentation metrics 
 unsigned long total_prefetches = 0;
 unsigned long used_prefetches = 0;
+unsigned long already_prefetched = 0;
 unsigned long avoided_faults = 0;
 unsigned long total_major_faults = 0;
 unsigned long total_pages_to_readahead = 0;
@@ -288,6 +289,7 @@ static int submit_prefetch(uint64_t vaddr) {
 	// check in-flight set and add BEFORE submitting to avoid races
     if (prefetch_set_contains(prefetching, page_idx)) {
         // already requested
+		already_prefetched += 1;
         free(data);
         return -1;
     }
@@ -317,7 +319,7 @@ static inline void maybe_submit() {
 
 		printf("number of submits and time: %i, %lu\n", pending_submits, now - last_submit_time_ns);
         io_uring_submit(&ring);
-		fprintf(stderr, "After io_uring submit\n");
+		// fprintf(stderr, "After io_uring submit\n");
         last_submit_time_ns = now;
         pending_submits = 0;
     }
@@ -328,8 +330,8 @@ static int handle_fault(const struct event *e) {
 	// fprintf(stderr, "inside handle fault lol\n");
 	// printf("%-5s %-7d address=0x%lx ip=0x%lx hello wtf\n",
 	// 		"FAULT", e->pid, e->address, e->ip);
-	printf("this is major fault from bpf %lu and this is from major_fault_counter %lu, this is min_fault %lu\n",
-											e->maj, major_fault_counter, e->min);
+	// printf("this is major fault from bpf %lu and this is from major_fault_counter %lu, this is min_fault %lu\n",
+	// 										e->maj, major_fault_counter, e->min);
 	if (e->maj == major_fault_counter) {
 		return 1;
 	}
@@ -410,7 +412,7 @@ int main(int argc, char **argv) {
 	policy = policy_sequential();   
 	// policy = policy_stride();
     policy_ctx = policy->init(); 
-	prefetch_set_t *prefetching = prefetch_set_create();
+	prefetching = prefetch_set_create();
 	int err;
 	last_submit_time_ns = get_time_ns();
 	uint64_t cg_id = get_cgroup_id("/sys/fs/cgroup/prefetch");
@@ -522,6 +524,7 @@ int main(int argc, char **argv) {
 
 	printf("Major faults: %lu\n", total_major_faults);
 	printf("Avoided faults: %lu\n", avoided_faults);
+	printf("Already prefetched: %lu\n", already_prefetched);
 	printf("Total readahead pages: %lu\n", total_pages_to_readahead);
 	printf("Prefetch coverage: %.2f %%\n",
 		100.0 * avoided_faults / total_major_faults);

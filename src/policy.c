@@ -39,14 +39,14 @@ static void seq_on_fault(policy_ctx_t *pctx, pid_t pid, uint64_t vaddr,
     if (ctx->last_fault_vaddr == UINT64_MAX) {
         ctx->window = 1;
         ctx->next_expected_vaddr = aligned_vaddr + (PAGE_SIZE);
-        printf("[SEQ] First fault: vaddr=0x%lx → window=1\n", aligned_vaddr);
+        // printf("[SEQ] First fault: vaddr=0x%lx → window=1\n", aligned_vaddr);
     } else if (aligned_vaddr == ctx->next_expected_vaddr) {
         uint64_t last_page = ctx->last_fault_vaddr >> 12;
         int64_t actual_diff = (int64_t)fault_page - (int64_t)last_page;
         ctx->window = MIN(ctx->window * 2, MAX_WINDOW);
         printf("[SEQ] SEQUENTIAL fault: vaddr=0x%lx (page=%lu) last=0x%lx (page=%lu) actual_diff=%ld pages → window=%zu\n", 
                aligned_vaddr, fault_page, ctx->last_fault_vaddr, last_page, actual_diff, ctx->window);
-        // ctx->next_expected_vaddr = aligned_vaddr + (ctx->window * (PAGE_SIZE));
+        ctx->next_expected_vaddr = aligned_vaddr + (ctx->window * (PAGE_SIZE));
         ctx->next_expected_vaddr = aligned_vaddr + PAGE_SIZE;
     } else {
         ctx->window = 1;
@@ -80,8 +80,8 @@ static size_t seq_compute_prefetch(policy_ctx_t *pctx, uint64_t fault_vaddr,
         out[count++] = aligned_vaddr + (i * PAGE_SIZE);
     }
     
-    // printf("[SEQ] compute_prefetch: window=%zu, prefetch_count=%zu\n", 
-    //        ctx->window, count);
+    printf("[SEQ] compute_prefetch: window=%zu, prefetch_count=%zu\n", 
+           ctx->window, count);
     return count;
 }
 
@@ -132,6 +132,15 @@ static void stride_on_fault(policy_ctx_t *pctx,
     uint64_t fault_page = aligned_vaddr >> 12;
     
     ctx->fault_count++;
+
+    if (ctx->last_fault_vaddr != UINT64_MAX) {
+        uint64_t last_page = ctx->last_fault_vaddr >> 12;
+        uint64_t current_page = aligned_vaddr >> 12;
+        int64_t actual_stride = (int64_t)current_page - (int64_t)last_page;
+
+        printf("[STRIDE DEBUG] Fault #%d: vaddr=0x%lx (page %lu), last_page=%lu, actual_stride=%ld\n",
+               ctx->fault_count, aligned_vaddr, current_page, last_page, actual_stride);
+    }
 
     if (ctx->last_fault_vaddr == UINT64_MAX) {
         // First fault
